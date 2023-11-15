@@ -5,19 +5,16 @@ from typing import Annotated, Optional
 
 import torch
 import typer
-from diffusers.utils.logging import set_verbosity_error as set_diffusers_verbosity_error
+from diffusers.utils.logging import \
+    set_verbosity_error as set_diffusers_verbosity_error
 from rich.logging import RichHandler
 
 from animatediff import __version__, console, get_dir
 from animatediff.generate import create_pipeline, run_inference
 from animatediff.pipelines import AnimationPipeline, load_text_embeddings
-from animatediff.settings import (
-    CKPT_EXTENSIONS,
-    InferenceConfig,
-    ModelConfig,
-    get_infer_config,
-    get_model_config,
-)
+from animatediff.settings import (CKPT_EXTENSIONS, InferenceConfig,
+                                  ModelConfig, get_infer_config,
+                                  get_model_config)
 from animatediff.utils.model import checkpoint_to_pipeline, get_base_model
 from animatediff.utils.pipeline import get_context_params, send_to_device
 from animatediff.utils.util import path_from_cwd, save_frames, save_video
@@ -115,7 +112,7 @@ def generate(
             "--length",
             "-L",
             min=1,
-            max=999,
+            max=9999,
             help="Number of frames to generate",
             rich_help_panel="Generation",
         ),
@@ -248,6 +245,8 @@ def generate(
     model_config: ModelConfig = get_model_config(config_path)
     infer_config: InferenceConfig = get_infer_config()
 
+    print(model_config)
+
     # set sane defaults for context, overlap, and stride if not supplied
     context, overlap, stride = get_context_params(length, context, overlap, stride)
 
@@ -299,6 +298,19 @@ def generate(
     num_seeds = len(model_config.seed)
     gen_total = num_prompts * repeats  # total number of generations
 
+    image=model_config.image
+    strength=model_config.strength
+    reference_image=model_config.reference_image
+    canny_image=model_config.canny_image
+    #(reference_image)
+    image_guide=model_config.image_guide
+
+    controlnet_conditioning_scale = model_config.controlnet_conditioning_scale
+    controlnet_conditioning_start = model_config.controlnet_conditioning_start
+    controlnet_conditioning_end   = model_config.controlnet_conditioning_end
+    controlnet_conditioning_bias  = model_config.controlnet_conditioning_bias
+    controlnet_preprocessing      = model_config.controlnet_preprocessing
+
     logger.info("Initialization complete!")
     logger.info(f"Generating {gen_total} animations from {num_prompts} prompts")
     outputs = []
@@ -328,6 +340,11 @@ def generate(
                 seed=seed,
                 steps=model_config.steps,
                 guidance_scale=model_config.guidance_scale,
+                image=image,
+                strength=strength,
+                canny_image=canny_image,
+                reference_image=reference_image,
+                image_guide=image_guide,
                 width=width,
                 height=height,
                 duration=length,
@@ -336,6 +353,11 @@ def generate(
                 context_frames=context,
                 context_overlap=overlap,
                 context_stride=stride,
+                controlnet_conditioning_scale = controlnet_conditioning_scale,
+                controlnet_conditioning_start = controlnet_conditioning_start,
+                controlnet_conditioning_end   = controlnet_conditioning_end,
+                controlnet_conditioning_bias  = controlnet_conditioning_bias,
+                controlnet_preprocessing=controlnet_preprocessing,
                 clip_skip=model_config.clip_skip,
             )
             outputs.append(output)

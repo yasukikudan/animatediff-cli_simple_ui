@@ -239,3 +239,14 @@ src/animatediff/_version.py
 # envrc
 .env*
 !.envrc.example
+
+input/
+output/
+data_test/
+*.old*
+*.back*
+back/
+.venv*
+mprofile_*
+*.ol
+*コピー*

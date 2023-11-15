@@ -7,14 +7,36 @@ from PIL import Image
 from torch import Tensor
 from torchvision.utils import save_image
 from tqdm.rich import tqdm
+from torchvision.transforms.functional import to_pil_image
 
+def encode_frames(video: Tensor) -> [Image]:
+    # ビデオテンソルをフレームのリストに再構成
+    frames = rearrange(video, "b c t h w -> t b c h w").squeeze(1)
+    # PIL Imageオブジェクトのリストを作成
+    images = [to_pil_image(frame) for frame in frames]
+    return images
+
+def save_images(flames:Image, frames_dir: PathLike):
+    frames_dir = Path(frames_dir)
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    for idx, frame in enumerate(tqdm(flames, desc=f"Saving frames to {frames_dir.stem}")):
+        frame.save(frames_dir.joinpath(f"{idx:04d}.png"))
+        #save_image(frame, frames_dir.joinpath(f"{idx:04d}.png"))
+
+def save_animation(flames:Image, save_path: PathLike, fps: int = 8):
+    save_path = Path(save_path)
+    save_path.parent.mkdir(parents=True, exist_ok=True)
+    images = [frame for frame in flames]
+    images[0].save(
+        fp=save_path, format="WEBP", append_images=images[1:], save_all=True, duration=(1 / fps * 1000), loop=0
+    )
 
 def save_frames(video: Tensor, frames_dir: PathLike):
     frames_dir = Path(frames_dir)
     frames_dir.mkdir(parents=True, exist_ok=True)
     frames = rearrange(video, "b c t h w -> t b c h w")
     for idx, frame in enumerate(tqdm(frames, desc=f"Saving frames to {frames_dir.stem}")):
-        save_image(frame, frames_dir.joinpath(f"{idx:03d}.png"))
+        save_image(frame, frames_dir.joinpath(f"{idx:04d}.png"))
 
 
 def save_video(video: Tensor, save_path: PathLike, fps: int = 8):

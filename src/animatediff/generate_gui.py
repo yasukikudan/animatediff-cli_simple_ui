@@ -30,6 +30,8 @@ from animatediff.utils.pipeline import get_context_params, send_to_device
 from diffusers.utils.logging import \
     set_verbosity_error as set_diffusers_verbosity_error
 
+import gc
+
 logger = logging.getLogger(__name__)
 
 data_dir = get_dir("data")
@@ -230,6 +232,26 @@ def create_pipeline(
 
     return pipeline
 
+
+def refresh_pipeline(pipeline: AnimationGeneratePipeline,
+                     scheduler_type: str= 'k_dpmpp_2m',
+                     infer_config: InferenceConfig = get_infer_config()):
+    
+    sched_kwargs = infer_config.noise_scheduler_kwargs
+    scheduler = get_scheduler(scheduler_type, sched_kwargs)
+    new_pipeline = AnimationGeneratePipeline(
+        vae=pipeline.vae,
+        text_encoder=pipeline.text_encoder,
+        tokenizer=pipeline.tokenizer,
+        unet=pipeline.unet,
+        controlnet=pipeline.controlnet,
+        scheduler= scheduler,
+        feature_extractor=pipeline.feature_extractor
+    )
+    load_text_embeddings(new_pipeline)
+    del pipeline
+    return new_pipeline
+
 def run_inference(
     pipeline: AnimationGeneratePipeline,
     prompt: str = ...,
@@ -307,12 +329,14 @@ def run_inference(
     logger.info("Generation complete, saving...")
 
     # Generate output filename based on prompt and save the video
-    out_file = generate_output_filename(out_dir, idx, seed, prompt)
-    now = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_video(pipeline_output["videos"] if return_dict else pipeline_output, out_file)
-    save_frames(pipeline_output["videos"] if return_dict else pipeline_output, out_dir.joinpath(now+f"{idx:02d}-{seed}"))
-
-    logger.info(f"Saved sample to {out_file}")
+    #out_file = generate_output_filename(out_dir, idx, seed, prompt)
+    #now = datetime.now().strftime("%Y%m%d_%H%M%S")
+    #save_video(pipeline_output["videos"] if return_dict else pipeline_output, out_file)
+    #save_frames(pipeline_output["videos"] if return_dict else pipeline_output, out_dir.joinpath(now+f"{idx:02d}-{seed}"))
+    torch.cuda.empty_cache()
+    gc.collect()
+    print(gc.garbage)
+    #logger.info(f"Saved sample to {out_file}")
     return pipeline_output
 
 def preprocess_canny_images(canny_image, width, height, controlnet_preprocessing):
@@ -324,10 +348,5 @@ def preprocess_canny_images(canny_image, width, height, controlnet_preprocessing
     else:
         return [convert_to_rgb(image) for image in canny_image]
 
-def generate_output_filename(out_dir, idx, seed, prompt):
-    re_clean_prompt = re.compile(r"[^a-zA-Z0-9]+")
-    prompt_tags = [re_clean_prompt.sub("", tag).strip().replace(" ", "-") for tag in prompt.split(",")]
-    prompt_str = "_".join((prompt_tags[:6]))
-    now = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path(out_dir).joinpath(f"{idx:02d}_{seed}_{prompt_str}_{now}.gif")
+
 

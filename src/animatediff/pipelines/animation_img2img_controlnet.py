@@ -2,46 +2,37 @@
 
 import inspect
 import logging
-from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional,Tuple, Union
-import PIL
-import cv2
 import math
+from dataclasses import dataclass
+from typing import Any, Callable, Dict, List, Optional, Tuple, Union
 
+import cv2
 import numpy as np
+import PIL
 import torch
 from diffusers import ModelMixin
 from diffusers.configuration_utils import FrozenDict
 from diffusers.image_processor import VaeImageProcessor
 from diffusers.loaders import LoraLoaderMixin, TextualInversionLoaderMixin
-from diffusers.models import AutoencoderKL,ControlNetModel
+from diffusers.models import AutoencoderKL, ControlNetModel
 from diffusers.pipelines.pipeline_utils import DiffusionPipeline
-from diffusers.schedulers import (
-    DDIMScheduler,
-    DPMSolverMultistepScheduler,
-    EulerAncestralDiscreteScheduler,
-    EulerDiscreteScheduler,
-    LMSDiscreteScheduler,
-    PNDMScheduler,
-)
-from diffusers.utils import (
-    BaseOutput,
-    deprecate,
-    is_accelerate_available,
-    is_accelerate_version,
-    randn_tensor,
-)
+from diffusers.schedulers import (DDIMScheduler, DPMSolverMultistepScheduler,
+                                  EulerAncestralDiscreteScheduler,
+                                  EulerDiscreteScheduler, LMSDiscreteScheduler,
+                                  PNDMScheduler)
+from diffusers.utils import (BaseOutput, deprecate, is_accelerate_available,
+                             is_accelerate_version, randn_tensor)
 from einops import rearrange
 from packaging import version
 from tqdm.rich import tqdm
 from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from animatediff.models.clip import CLIPSkipTextModel
+from animatediff.models.controlnet import ControlNetModel3D, ControlNetOutput
 from animatediff.models.unet import UNet3DConditionModel
-from animatediff.pipelines.context import get_context_scheduler, get_total_steps
+from animatediff.pipelines.context import (get_context_scheduler,
+                                           get_total_steps)
 from animatediff.utils.model import nop_train
-
-from animatediff.models.controlnet import ControlNetModel3D,ControlNetOutput
 
 logger = logging.getLogger(__name__)
 
@@ -115,7 +106,7 @@ def ensure_one_dimension(t):
         return t.unsqueeze(0)
     elif t.dim() == 1:
         return t
-    
+
 
 def create_embedding_from_prompt(prompt_text, tokenizer, text_encoder, clip_skip, device, max_token_chunk_size=75, logger=None):
     # Process the prompt text and tokenize it
@@ -187,10 +178,10 @@ def apply_canny(input_image, low_threshold=100, high_threshold=200):
 def auto_reshape_tensor(input_tensor):
     """
     Automatically reshape the tensor by merging the 0th and 2nd dimensions.
-    
+
     Parameters:
     - input_tensor: The tensor to reshape.
-    
+
     Returns:
     - reshaped_tensor: Tensor with merged 0th and 2nd dimensions.
     - original_shape: Original shape of the input tensor.
@@ -203,11 +194,11 @@ def auto_reshape_tensor(input_tensor):
 def revert_auto_reshape(reshaped_tensor, split_factor=2):
     """
     Revert the reshaped tensor to its original shape by splitting the 0th dimension.
-    
+
     Parameters:
     - reshaped_tensor: The tensor that was reshaped by merging the 0th and 2nd dimensions.
     - split_factor: The factor by which to split the 0th dimension. Default is 2.
-    
+
     Returns:
     - Tensor reverted to its original shape.
     """
@@ -217,27 +208,27 @@ def revert_auto_reshape(reshaped_tensor, split_factor=2):
 
 def compute_exponential_decay(num_steps, start_strength=1.0, decay=0.3):
     """Compute an exponential decay based on the given parameters."""
-    
+
     timesteps = list(range(num_steps))
     decay_values = []
-    
+
     for i in timesteps:
         value = start_strength * math.exp(-decay * i)
         decay_values.append(value)
-    
+
     return decay_values
 
 
 def compute_step_decay(num_steps, start_strength=1.0, decay_step=10, decay_rate=0.5):
     """Compute step decay based on the given parameters."""
-    
+
     decay_values = [start_strength]
-    
+
     for i in range(1, num_steps):
         if i % decay_step == 0:
             start_strength *= decay_rate
         decay_values.append(start_strength)
-    
+
     return decay_values
 
 
@@ -670,7 +661,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
         return latents.to(device, dtype)
-    
+
     #description: "This pipeline allows you to animate images using text prompts. It is based on the paper"
     def prepare_latents_image(self, image, timestep, batch_size,video_length, num_images_per_prompt,dtype,device,generator=None):
         if not isinstance(image, (torch.Tensor, PIL.Image.Image, list)):
@@ -720,7 +711,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         else:
             init_latents = torch.cat([init_latents], dim=0)
 
-        
+
         init_latents=init_latents.unsqueeze(2).repeat(1, 1,video_length ,1, 1)
         shape = init_latents.shape
         noise = randn_tensor(shape, generator=generator, device=device, dtype=dtype)
@@ -733,7 +724,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
             latents = init_latents + noise
 
         return latents
-    
+
     def prepare_initial_latents(self, images, timestep, batch_size, num_images_per_prompt, dtype, device, generator=None, strength=None):
         if not isinstance(images, (torch.Tensor, PIL.Image.Image, list)):
             raise ValueError(
@@ -761,7 +752,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         init_latents = init_latents.unsqueeze(2).repeat(1, 1,len(images), 1, 1)
         print("複数枚画像を入力した場合の次元数", init_latents.size())
         return init_latents
-    
+
     def prepare_controlnet_image(
         self,
         image,
@@ -801,7 +792,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
 
         if partial_latents is not None:
             shape_partial = partial_latents.shape
-            
+
             # Ensure that the partial_latents is not longer than the latents
             if shape_partial[2] >= shape[2]:
                 # Replace the beginning of the partial_latents with the latents
@@ -837,7 +828,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         return latents
 
 
-    
+
     def get_timesteps(self, num_inference_steps, strength, device):
         # get the original timestep using init_timestep
         init_timestep = min(int(num_inference_steps * strength), num_inference_steps)
@@ -850,7 +841,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         print(timesteps)
 
         return timesteps, num_inference_steps - t_start
-    
+
 
 
 
@@ -892,7 +883,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         clip_skip: int = 1,
         **kwargs,
     ):
-        
+
         # 16 frames is max reliable number for one-shot mode, so we use sequential mode for longer videos
         sequential_mode = video_length is not None and video_length >48
         device = self._execution_device
@@ -904,26 +895,27 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         self.text_encoder.to(device)
         guess_mode=True
         print('画像の枚数',len(image))
-        if len(image)==1:
+        if type(image)!=list:
+            image=[image]# for i in range(video_length)]
+        elif len(image)==1:
             #イメージが一枚の場合は、画像を増やす
             image=[image[0] for i in range(video_length)]
-        else:
+        elif len(image)>1:
             image=image[0:video_length]
 
 
-
         if canny_image is None:
-            canny_image=[apply_canny(im,low_threshold=50,high_threshold=100) for im in image]
+            canny_image=None#[apply_canny(im,low_threshold=50,high_threshold=100) for im in image]
         else:
             if len(canny_image)==1:
             #イメージが一枚の場合は、画像を増やす
                 canny_image=[canny_image[0] for i in range(video_length)]
             else:
                 canny_image=canny_image[0:video_length]
-            canny_image=[apply_canny(im,low_threshold=50,high_threshold=100) for im in canny_image]#[cv2.cvtColor(np.array(c),cv2.COLOR_RGB2GRAY) for c in canny_image[0:video_length]]
+            #canny_image=[apply_canny(im,low_threshold=50,high_threshold=100) for im in canny_image]#[cv2.cvtColor(np.array(c),cv2.COLOR_RGB2GRAY) for c in canny_image[0:video_length]]
 
-        print('画像の枚数',len(image))
-        print('画像の枚数',len(reference_image))
+        #print('画像の枚数',len(image))
+        #print('画像の枚数',len(reference_image))
         # Default height and width to unet
         height = height or self.unet.config.sample_size * self.vae_scale_factor
         width = width or self.unet.config.sample_size * self.vae_scale_factor
@@ -972,7 +964,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         #print(timesteps,num_inference_steps)
         timesteps, num_inference_steps = self.get_timesteps(num_inference_steps, strength, device)
         latent_timestep = timesteps[:1].repeat(batch_size * num_videos_per_prompt)
-        
+
         #img2img guidenace step
         image_guide_step=int(len(timesteps)*image_guide)
         print(timesteps,num_inference_steps,latent_timestep)
@@ -982,19 +974,23 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         num_channels_latents = self.unet.config.in_channels
 
         #(batch_size,num_videos_per_prompt,video_length)
-        print('データ生成',len(image))
+        #print('データ生成',len(image))
 
-    
-        #initial_image=self.image_processor.preprocess([image[0]])
-        #initial_latents2=self.prepare_initial_latents(
-        #    initial_image,latent_timestep,batch_size,num_videos_per_prompt,self.vae.dtype, device, generator
-        #)
-        #del initial_image
-        #print("初期化ベクトルサイズ initial_latents2 ",initial_latents2.size())
+        if image_guide>0.0:
+            initial_image=self.image_processor.preprocess([image[0]])
+            initial_latents2=self.prepare_initial_latents(
+                initial_image,latent_timestep,batch_size,num_videos_per_prompt,self.vae.dtype, device, generator
+            )
+            del initial_image
+            print("初期化ベクトルサイズ initial_latents2 ",initial_latents2.size())
 
-        latents=[]
+        latents=None
         initial_latent=None
-        if len(image)>1:
+        if len(image)==1:
+            im = self.image_processor.preprocess([image[0]])
+            latents=self.prepare_latents_image(im,latent_timestep,batch_size,video_length,num_videos_per_prompt,self.vae.dtype, latents_device, generator)
+        elif len(image)>1:
+            latents=[]
             for i,im in enumerate(image):
                 im = self.image_processor.preprocess([im])
                 latents.append(self.prepare_latents_image(
@@ -1003,24 +999,34 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
             print("初期化ベクトルサイズ latents ",latents[0].size())
             latents=torch.cat(latents,dim=2)
             print("初期化ベクトルサイズ latents ",latents.size())
-        
         else:
-            im = self.image_processor.preprocess([image[0]])
-            latents=self.prepare_latents_image(im,latent_timestep,batch_size,video_length,num_videos_per_prompt,self.vae.dtype, latents_device, generator)
+            latents = self.prepare_latents(
+                batch_size * num_videos_per_prompt,
+                num_channels_latents,
+                video_length,
+                height,
+                width,
+                prompt_embeds.dtype,
+                latents_device,  # keep latents on cpu for sequential mode
+                generator,
+                latents,
+            )
         initial_latent=latents[:, :, 0]
 
-        controlnet_image=[self.prepare_controlnet_image(ci, width, height, batch_size, num_videos_per_prompt, latents_device, self.controlnet.dtype, do_classifier_free_guidance, guess_mode) for ci in canny_image]
-        controlnet_image=torch.stack(controlnet_image, dim=2)
-
+        controlnet_image = None
+        if canny_image is not None:
+            controlnet_image=[self.prepare_controlnet_image(ci, width, height, batch_size, num_videos_per_prompt, latents_device, self.controlnet.dtype, do_classifier_free_guidance, guess_mode) for ci in canny_image]
+            controlnet_image=torch.stack(controlnet_image, dim=2)
+            #print(controlnet_image.shape)
         #del image
         #del canny_image
-        
+
         #reference_image = self.image_processor.preprocess(reference_image)
         #initial_latents=self.prepare_latents_image(
         #       reference_image,None,batch_size,video_length,num_videos_per_prompt,self.vae.dtype, device, generator
         #)
         #del reference_image
-  
+
                 #デバック用に追加
         #print("画像読み込みの次元数:", initial_latents.size())
         print(context_frames)
@@ -1071,7 +1077,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
         #self.feature_extractor.to(torch.device("cpu"))
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
-        zero_down_block_res_samples = None 
+        zero_down_block_res_samples = None
         zero_mid_block_res_sample = None
         chace_down_block_res_samples = []
         chace_mid_block_res_sample = []
@@ -1086,14 +1092,15 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
                     #latents[:, :, 0]=initial_latent
                     print(i,"重み更新",image_guide_step)
                     #latents =self.adjust_latents_for_step(initial_latents,t,latents,0.05*(image_guide_step/len(timesteps)),dtype=self.vae.dtype, device=device, generator=generator)
-                #latents=(self.get_latents_for_step(initial_latents2,t,latents,dtype=self.vae.dtype, device=device, generator=generator)*0.5)+(latents*0.5)
+                    if image_guide>0.0:
+                        latents=(self.get_latents_for_step(initial_latents2,t,latents,dtype=self.vae.dtype, device=device, generator=generator))#*0.1)+(latents*0.9)
 
 
 
                            # controlnet(s) inference
 
-                                
- 
+
+
 
                 noise_pred = torch.zeros(
                     (latents.shape[0] * (2 if do_classifier_free_guidance else 1), *latents.shape[1:]),
@@ -1130,7 +1137,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
                 batch_size_per_subbatch =  2# 各サブバッチのバッチサイズ
                 latents_context = [i for i in range(batch_size)]
                 self.controlnet.to(device,latents.dtype)
-                
+
                 for z in range(0, batch_size, batch_size_per_subbatch):
                     #subbatch_context = context[i:i+batch_size_per_subbatch]
                     subbatch_latents_context = latents_context[z:z+batch_size_per_subbatch]
@@ -1181,7 +1188,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
 
                 #print("down_block_res_samples",down_block_res_samples[0].size(),len(down_block_res_samples))
                 #print("mid_block_res_sample",mid_block_res_sample.size())
-                    
+
                  #一回処理が実行されたことがあるバッチのインデックスを保存する集合
                 processed_batch_indices = set()
 
@@ -1198,7 +1205,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
                     #if context[-1] <= context[0]:
                      #   progress_bar.update()
                     #    continue
-                    
+
 
 
 
@@ -1213,13 +1220,14 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
 
 
                     latent_model_input=latent_model_input_all[:, :, context].to(device)
-                    control_model_input = latent_model_input 
+                    control_model_input = latent_model_input
 
 
                     down_block_res_samples=None
                     mid_block_res_sample=None
-                    #一度処理を行ったインデックスはスキップする 
-                    if cond_scale>0.005:
+                    #一度処理を行ったインデックスはスキップする
+                    #if controlnet_image is not None:
+                    if (cond_scale>0.005) and (controlnet_image is not None):
                         self.unet.to(torch.device("cpu"))
                         self.vae.to(torch.device("cpu"))
                         torch.cuda.empty_cache()
@@ -1233,13 +1241,16 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
                         batch_size_per_subbatch =  2# 各サブバッチのバッチサイズ
                         latents_context =[i for i in range(len(context))]
                         batch_size=len(latents_context)
-                        
+
                         for z in range(0, batch_size, batch_size_per_subbatch):
                             subbatch_context = context[z:z+batch_size_per_subbatch]
                             print("subbatch_context",subbatch_context)
                             subbatch_latents_context = latents_context[z:z+batch_size_per_subbatch]
                             # controlnet_cond を作成
-                            subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
+                            #subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
+                            subbatch_controlnet_cond = controlnet_image[:, :, subbatch_context]
+                            if subbatch_controlnet_cond.shape[1]!=3:
+                                subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
                             subbatch_controlnet_cond = subbatch_controlnet_cond.to(self.controlnet.device, self.controlnet.dtype)
                             subbatch_controlnet_latents = control_model_input[:, :, subbatch_latents_context]
                             print('count',i,z)
@@ -1287,7 +1298,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
 
                         print("down_block_res_samples",down_block_res_samples[0].size(),len(down_block_res_samples))
                         print("mid_block_res_sample",mid_block_res_sample.size())
-                    
+
 
                     """                    ref_image_latents =(initial_latents[:, :, context]
                         .to(device)
@@ -1348,7 +1359,7 @@ class AnimationPipelineImg2ImgControlnet(DiffusionPipeline, TextualInversionLoad
                 if do_classifier_free_guidance:
                     noise_pred_uncond, noise_pred_text = (noise_pred / counter).chunk(2)
                     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
- 
+
                 # compute the previous noisy sample x_t -> x_t-1
                 latents = self.scheduler.step(
                     model_output=noise_pred.to(latents_device),

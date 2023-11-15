@@ -6,12 +6,9 @@ from pathlib import Path
 from typing import Any, Dict, Optional, Tuple, Union
 
 from pydantic import BaseConfig, BaseSettings, Field
-from pydantic.env_settings import (
-    EnvSettingsSource,
-    InitSettingsSource,
-    SecretsSettingsSource,
-    SettingsSourceCallable,
-)
+from pydantic.env_settings import (EnvSettingsSource, InitSettingsSource,
+                                   SecretsSettingsSource,
+                                   SettingsSourceCallable)
 
 from animatediff import get_dir
 from animatediff.schedulers import DiffusionScheduler
@@ -109,6 +106,34 @@ class ModelConfig(BaseSettings):
     clip_skip: int = 1  # skip the last N-1 layers of the CLIP text encoder
     prompt: list[str] = Field([])  # Prompt(s) to use
     n_prompt: list[str] = Field([])  # Anti-prompt(s) to use
+
+    controlnet: Optional[Path] = Field(None)  # Path to the controlnet checkpoint
+
+
+    # Directly specifying the path to image files
+    image: Optional[Union[Path, str]] = Field(None, description="Path to the image file")
+    canny_image: Optional[Union[Path, str]] = Field(None, description="Path to the canny-processed image file")
+    reference_image: Optional[Union[Path, str]] = Field(None, description="Path to the reference image file")
+    strength: Optional[float] = Field(1.0, description="Strength indicating the importance of the image", gte=0, le=1)
+    image_guide: Optional[float]    = Field(1.0, description="Image_guide indicating the importance of the image", gte=0, le=1)
+
+    controlnet_conditioning_scale:Optional[float]= Field(0.01, description="A coefficient indicating the scale of the control net conditioning.", gte=0, le=1)
+    controlnet_conditioning_start:Optional[float]= Field(0.1, description="The intensity at which the control net conditioning starts.", gte=0, le=2)
+    controlnet_conditioning_end  :Optional[float]= Field(0.2, description="The intensity at which the control net conditioning ends.", gte=0, le=1)
+    controlnet_conditioning_bias :Optional[float]= Field(1.0, description="A coefficient indicating the bias of the control net conditioning.", gte=0, le=1)
+    controlnet_preprocessing :str = Field("none", description="The preprocessing method for the control net conditioning.", regex="^(none|canny|gray)$")
+
+    # Specifying the folder where the files are stored
+    #image_folder: Optional[Path] = Field(None, description="Folder containing the image files")
+    #canny_image_folder: Optional[Path] = Field(None, description="Folder containing the canny-processed image files")
+    #reference_image_folder: Optional[Path] = Field(None, description="Folder containing the reference image files")
+
+    # Strengths and weights indicating the importance of each image
+    #strength: Optional[float] = Field(1.0, description="Strength indicating the importance of the image", gt=0, le=1)
+    #image_guide: Optional[float]    = Field(1.0, description="Image_guide indicating the importance of the image", gt=0, le=1)
+
+    #canny_image_weight: Optional[float] = Field(1.0, description="Weight indicating the importance of the canny image", gt=0, le=2)
+    #reference_image_weight: Optional[float] = Field(1.0, description="Weight indicating the importance of the reference image", gt=0, le=2)
 
     class Config(JsonConfig):
         json_config_path: Path

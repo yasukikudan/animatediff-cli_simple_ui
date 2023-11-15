@@ -1,6 +1,7 @@
 # Adapted from https://github.com/showlab/Tune-A-Video/blob/main/tuneavideo/pipelines/pipeline_tuneavideo.py
 
 import inspect
+import warnings
 import logging
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Union
@@ -43,6 +44,33 @@ logger = logging.getLogger(__name__)
 @dataclass
 class AnimationPipelineOutput(BaseOutput):
     videos: Union[torch.Tensor, np.ndarray]
+
+
+def preprocess(image):
+    warnings.warn(
+        "The preprocess method is deprecated and will be removed in a future version. Please"
+        " use VaeImageProcessor.preprocess instead",
+        FutureWarning,
+    )
+    if isinstance(image, torch.Tensor):
+        return image
+    elif isinstance(image, PIL.Image.Image):
+        image = [image]
+
+    if isinstance(image[0], PIL.Image.Image):
+        w, h = image[0].size
+        w, h = (x - x % 8 for x in (w, h))  # resize to integer multiple of 8
+
+        image = [np.array(i.resize((w, h), resample=PIL_INTERPOLATION["lanczos"]))[None, :] for i in image]
+        image = np.concatenate(image, axis=0)
+        image = np.array(image).astype(np.float32) / 255.0
+        image = image.transpose(0, 3, 1, 2)
+        image = 2.0 * image - 1.0
+        image = torch.from_numpy(image)
+    elif isinstance(image[0], torch.Tensor):
+        image = torch.cat(image, dim=0)
+    return image
+
 
 
 class AnimationPipeline(DiffusionPipeline, TextualInversionLoaderMixin):
@@ -675,3 +703,6 @@ class AnimationPipeline(DiffusionPipeline, TextualInversionLoaderMixin):
         _ = self.vae.eval()
         self.vae = self.vae.requires_grad_(False)
         self.vae.train = nop_train
+
+
+

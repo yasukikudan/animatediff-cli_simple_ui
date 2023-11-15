@@ -51,9 +51,9 @@ def maybe_bfloat16(
 def dtype_for_model(model: str, device: torch.device) -> torch.dtype:
     match model:
         case "unet":
-            return torch.float32 if device.type == "cpu" else torch.float16
+            return torch.float16 if device.type == "cpu" else torch.float16
         case "tenc":
-            return torch.float32 if device.type == "cpu" else torch.float16
+            return torch.float16 if device.type == "cpu" else torch.float16
         case "vae":
             return maybe_bfloat16(device, fallback=torch.float32)
         case unknown:

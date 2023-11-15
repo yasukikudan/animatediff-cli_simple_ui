@@ -154,23 +154,138 @@ def create_embedding_from_prompt(prompt_text, tokenizer, text_encoder, clip_skip
 
 import re
 
-def create_embedding_from_prompt(prompt_text, tokenizer, text_encoder, clip_skip, device, max_token_chunk_size=75, logger=None):
-    # Split the prompt text by '(' and collect segments without '('
-    tokens_list = []
+def process_prompt(prompt_text, tokenizer):
+    token_ids_list = []
     weights_list = []
-    for partial_text in re.split(r'\(', prompt_text):
-        for text_segment in re.split(r'\)', partial_text):
-            weight_match = re.search(r':([\d.]+)$', text_segment)
+
+    # Split the prompt text into segments based on parentheses
+    for partial_text in re.split(r'\(|\)', prompt_text):
+        if partial_text:  # Check if the segment is not empty
+            # Look for a weight indicator at the end of a segment
+            weight_match = re.search(r':([\d.]+)$', partial_text)
             if weight_match:
                 weight = float(weight_match.group(1))
-                text_segment = re.sub(r':([\d.]+)$', '', text_segment)
+                text_segment = re.sub(r':([\d.]+)$', '', partial_text)
             else:
                 weight = 1.0
-            text_segment_cleaned = re.sub(r'[^\w\s]', '', text_segment)
-            tokens = tokenizer(text_segment_cleaned, add_special_tokens=False)['input_ids']
-            tokens_list.extend(tokens)
-            weights_list.extend([weight] * len(tokens))
+                text_segment = partial_text
 
+            # Tokenize the text segment and extend the tokens and weights lists
+            tokenized_text = tokenizer.encode(text_segment, add_special_tokens=False)
+            token_ids_list.extend(tokenized_text)
+            weights_list.extend([weight] * len(tokenized_text))
+
+    return token_ids_list, weights_list
+
+
+def create_windows_from_total_length(total_length, window_size, step_size=None):
+    if total_length <= window_size:
+        return [(0, total_length)]
+    if step_size is None:
+        step_size = window_size // 2
+
+    windows_indices = []
+    start_index = 0
+
+    while start_index < total_length:
+        end_index = min(start_index + window_size, total_length)
+        windows_indices.append((start_index, end_index))
+        start_index += step_size
+
+        if end_index == total_length:
+            break
+
+    return windows_indices
+
+def smooth_periodic_function(window, x):
+    # xを0からwindowまでの範囲に収める
+    x = x % window
+
+    if(x>window//2):
+      return 0.0
+    
+    # 周期関数を生成
+    if x < window / 2:
+        y= 1.0 - (2.0 / window) * x
+    else:
+        y= (2.0 / window) * (x - window / 2)
+    return y**2.0
+
+
+def calculate_weighted_moving_average(latent_tensor, decay_rate=0.1, window=16,num_frames_to_consider=2,start_frame=0):
+    num_frames = latent_tensor.size(2)
+    # We create a tensor of weights that will decay rapidly according to the decay_rate
+    # The weights are focused on the current and the previous two frames.
+    weights = torch.tensor([decay_rate ** (num_frames_to_consider - i - 1) for i in range(num_frames_to_consider)])
+    weights /= weights.sum()  # Normalize the weights to sum to 1
+
+    # Initialize a tensor for the result with the same shape as the input
+    weighted_averages = torch.zeros_like(latent_tensor)
+    # Copy the first frame as is 
+    weighted_averages[:, :, :start_frame] = latent_tensor[:, :, :start_frame]
+
+    # Apply the weights to calculate the weighted moving average
+    for i in range(start_frame,num_frames):
+        # Determine the range of frames to include in the average for the current frame
+        start_idx = max(i - num_frames_to_consider + 1, 0)
+        end_idx = i + 1
+        # Select the relevant weights based on how many frames are included in the average
+        relevant_weights = weights[:end_idx - start_idx]
+        # Calculate the weighted sum for the current frame
+        for j in range(start_idx, end_idx):
+            weighted_averages[:, :, i] += latent_tensor[:, :, j] * relevant_weights[j - start_idx]
+        
+        scale=smooth_periodic_function(window,i)
+        weighted_averages[:, :, i] = (latent_tensor[:, :, i]*(1.0-scale)) + (weighted_averages[:, :, i]*(scale))
+
+    return weighted_averages
+
+
+def create_embedding_from_prompt(prompt_text, tokenizer, text_encoder, clip_skip, device,logger=None):
+    max_token_chunk_size = tokenizer.model_max_length
+    dtype = text_encoder.dtype
+    # Process the prompt text and tokenize it and analyze the weights
+    tokens_list,weights_list=process_prompt(prompt_text, tokenizer)
+    #split the tokens into chunks of max_token_chunk_size
+    window_indices =create_windows_from_total_length(len(tokens_list),max_token_chunk_size)
+    # couter for averaging the embeddings
+    counter = torch.zeros(tokenizer.model_max_length, dtype=dtype, device=device)
+    
+    # create the embeddings
+    embeds=[]
+    
+    # window average
+    for start_index,end_index in window_indices:
+        tokens_chunk=tokens_list[start_index:end_index]
+        tokens_length=len(tokens_chunk)
+        padding_length = max_token_chunk_size - tokens_length
+        tokens_chunk+=[tokenizer.pad_token_id] * padding_length
+        tokens_chunk=torch.tensor([tokens_chunk])
+
+        weights_chunk=weights_list[start_index:end_index]
+        weights_chunk+=[1.0] * padding_length
+
+
+        if hasattr(text_encoder.config, "use_attention_mask") and text_encoder.config.use_attention_mask:
+            attention_mask=[1]*tokens_length+[0]*padding_length
+            attention_mask = torch.tensor(attention_mask ,dtype=dtype)
+        else:
+            attention_mask = None
+        weights_chunk=torch.tensor([weights_chunk],dtype=dtype).to(device)
+        embed=text_encoder(
+            tokens_chunk.to(device),
+            attention_mask=attention_mask,
+            clip_skip=clip_skip
+            )[0]
+        embed=embed*weights_chunk.unsqueeze(-1)
+        embeds.append(embed)
+        counter[0:tokens_length]+=1
+    
+    #counter=torch.tensor(counter.reshape(1,-1)).unsqueeze(-1).to(device)
+    prompt_embeds=torch.cat(embeds).mean(dim=0).unsqueeze(0)#/counter
+    print('テキスト埋め込み次元数',prompt_embeds.size(),prompt_embeds.dtype)
+    return prompt_embeds
+    """
     comma_token = tokenizer.convert_tokens_to_ids(',')
 
     chunk_starts = []
@@ -224,6 +339,7 @@ def create_embedding_from_prompt(prompt_text, tokenizer, text_encoder, clip_skip
 
         if hasattr(text_encoder.config, "use_attention_mask") and text_encoder.config.use_attention_mask:
             attention_mask = torch.ones_like(text_input_ids,dtype=torch.float16).to(device)
+            text_inputs.attention_mask = attention_mask
         else:
             attention_mask = None
 
@@ -239,7 +355,7 @@ def create_embedding_from_prompt(prompt_text, tokenizer, text_encoder, clip_skip
     print("テキスト埋め込みの個数",len(prompt_embeds_list))
     prompt_embeds = torch.cat(prompt_embeds_list).mean(dim=0).unsqueeze(0)
     print('テキスト埋め込み次元数',prompt_embeds.size(),prompt_embeds.dtype)
-
+    """
     return prompt_embeds
 
 
@@ -321,6 +437,46 @@ def compute_step_decay(num_steps, start_strength=1.0, decay_step=10, decay_rate=
 
     return decay_values
 
+class ResourceContextManager:
+    def __init__(self, resource, acquire_func, release_func):
+        # Store the resource, acquire function, and release function
+        self.resource = resource
+        self.acquire_func = acquire_func
+        self.release_func = release_func
+
+    def __enter__(self):
+        # When entering the `with` block, call the acquire function
+        self.acquire_func(self.resource)
+        return self.resource
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # When exiting the `with` block, call the release function
+        self.release_func(self.resource)
+        # Return False to propagate exceptions, if any
+        #return True
+
+
+class MemoryContextManager:
+    def __init__(self, resource, execute_device ,storage_device):
+        # Store the resource, acquire function, and release function
+        self.resource = resource
+        self.execute_device  = execute_device 
+        self.storage_device =storage_device
+
+    def __enter__(self):
+        # When entering the `with` block, call the acquire function
+        self.resource=self.resource.to(self.execute_device)
+        return self.resource
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        # When exiting the `with` block, call the release function
+        #self.release_func(self.resource)
+        self.resource.to(self.storage_device)
+        # Return False to propagate exceptions, if any
+        return True
+    
+    def move(self,device):
+         self.resource=self.resource.to(device)
 
 #description: "This pipeline allows you to animate images using text prompts. It is based on the paper"
 class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
@@ -525,8 +681,8 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
             if isinstance(self, TextualInversionLoaderMixin):
                 prompt = self.maybe_convert_prompt(prompt, self.tokenizer)
 
-            #prompt_embeds = create_embedding_from_prompt(prompt, self.tokenizer, self.text_encoder, clip_skip, device,
-            #                                             max_token_chunk_size=self.tokenizer.model_max_length)
+            prompt_embeds = create_embedding_from_prompt(prompt, self.tokenizer, self.text_encoder, clip_skip, device)
+            """"
             text_inputs = self.tokenizer(
                 prompt,
                 padding="max_length",
@@ -562,6 +718,7 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                 clip_skip=clip_skip,
             )
             prompt_embeds = prompt_embeds[0]
+            """
 
         bs_embed, seq_len, _ = prompt_embeds.shape
         # duplicate text embeddings for each generation per prompt, using mps friendly method
@@ -593,6 +750,8 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
             if isinstance(self, TextualInversionLoaderMixin):
                 uncond_tokens = self.maybe_convert_prompt(uncond_tokens, self.tokenizer)
 
+            negative_prompt_embeds = create_embedding_from_prompt(negative_prompt, self.tokenizer, self.text_encoder, clip_skip, device)
+            """
             max_length = prompt_embeds.shape[1]
             uncond_input = self.tokenizer(
                 uncond_tokens,
@@ -619,6 +778,7 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
             negative_prompt_embeds = negative_prompt_embeds[0]
             #negative_prompt_embeds= create_embedding_from_prompt(negative_prompt, self.tokenizer, self.text_encoder, clip_skip, device,
              #                                                    max_token_chunk_size=max_length)
+             """
 
         if do_classifier_free_guidance:
             # duplicate unconditional embeddings for each generation per prompt, using mps friendly method
@@ -754,6 +914,59 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
         # scale the initial noise by the standard deviation required by the scheduler
         latents = latents * self.scheduler.init_noise_sigma
         return latents.to(device, dtype)
+    
+
+    def prepare_latents_with_context(
+            self,
+            batch_size,
+            num_channels_latents,
+            video_length,
+            context_frames,
+            height,
+            width,
+            dtype,
+            device,
+            generator,
+            latents=None,
+        ):
+            # context_frames が video_length より短いことを確認
+            if context_frames > video_length:
+                raise ValueError("context_frames must be shorter than video_length")
+
+            # context_frames 用の潜在変数の形状を計算
+            context_shape = (
+                batch_size,
+                num_channels_latents,
+                context_frames,
+                height // self.vae_scale_factor,
+                width // self.vae_scale_factor,
+            )
+
+            # 潜在変数の初期化
+            if latents is None:
+                # context_frames 用の潜在変数を生成
+                context_latents = randn_tensor(context_shape, generator=generator, device=self.unet.device, dtype=dtype)
+
+                # context_latents を video_length まで繰り返す
+                latents = context_latents.repeat(1, 1, video_length // context_frames, 1, 1)
+
+                # video_length が context_frames の倍数ではない場合、不足分を追加する
+                remainder = video_length % context_frames
+                if remainder:
+                    # 不足分のフレームを追加する
+                    extra_context = context_latents[:, :, :remainder, :, :]
+                    latents = torch.cat((latents, extra_context), dim=2)
+            else:
+                # 与えられた潜在変数が適切な形状であるか検証
+                if latents.shape[2] != video_length:
+                    raise ValueError("Provided latents tensor does not have the correct video_length dimension")
+
+            # 潜在変数のスケーリング
+            latents = latents * self.scheduler.init_noise_sigma
+
+            # 潜在変数を指定されたデバイスとデータ型に変換して返す
+            return latents.to(device, dtype)
+
 
     #description: "This pipeline allows you to animate images using text prompts. It is based on the paper"
     def prepare_latents_image(self, image, timestep, batch_size,video_length, num_images_per_prompt,dtype,device,generator=None):
@@ -940,6 +1153,7 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
 
 
 
+
     @torch.no_grad()
     def __call__(
         self,
@@ -973,20 +1187,46 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
         context_frames: int = -1,
         context_stride: int = 3,
         context_overlap: int = 4,
-        context_schedule: str = "continuous",
+        context_schedule: str = "continuous2",
         clip_skip: int = 1,
         **kwargs,
     ):
 
+        if video_length<context_frames:
+            context_frames=video_length           
         # 16 frames is max reliable number for one-shot mode, so we use sequential mode for longer videos
-        sequential_mode = video_length is not None and video_length >48
+        sequential_mode = video_length is not None and video_length >16
         device = self._execution_device
         latents_device = torch.device("cpu") if sequential_mode else device
 
-        context_schedule = "continuous2"
-        self.unet.to(device)
-        self.vae.to(device)
-        self.text_encoder.to(device)
+        execute_device = torch.device("cuda") 
+        storage_device = torch.device("cpu") 
+
+        #context_schedule = "continuous2"
+
+        #low vram mode
+
+        controlnet_with=MemoryContextManager(self.controlnet,execute_device,storage_device)
+        vae_with=MemoryContextManager(self.vae,execute_device,storage_device)
+        unet_with_vram=MemoryContextManager(self.unet,execute_device,execute_device)
+        text_encoder_with=MemoryContextManager(self.text_encoder,execute_device,storage_device)
+
+        unet_with_lowmem=MemoryContextManager(self.unet,execute_device,storage_device)
+
+        unet_with=unet_with_vram
+
+
+        controlnet_with.move(storage_device)
+        vae_with.move(storage_device)
+        unet_with.move(storage_device)
+        text_encoder_with.move(storage_device)
+        #self.feature_extractor.to(storage_device)
+        #latents_device=storage_device
+
+        #self.unet.to(device)
+        #self.vae.to(device)
+        #self.text_encoder.to(device)
+
         guess_mode=True
         print('画像の枚数',len(image))
         if type(image)!=list:
@@ -1032,22 +1272,23 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
         # corresponds to doing no classifier free guidance.
         do_classifier_free_guidance = guidance_scale > 1.0
 
-        # 3. Encode input prompt
-        text_encoder_lora_scale = (
-            cross_attention_kwargs.get("scale", None) if cross_attention_kwargs is not None else None
-        )
-        prompt_embeds = self._encode_prompt(
-            prompt,
-            device,
-            num_videos_per_prompt,
-            do_classifier_free_guidance,
-            negative_prompt,
-            prompt_embeds=prompt_embeds,
-            negative_prompt_embeds=negative_prompt_embeds,
-            lora_scale=text_encoder_lora_scale,
-            clip_skip=clip_skip,
-        )
-        print("各次元の要素数:", prompt_embeds.size(),batch_size)
+        with text_encoder_with as _:
+            # 3. Encode input prompt
+            text_encoder_lora_scale = (
+                cross_attention_kwargs.get("scale", None) if cross_attention_kwargs is not None else None
+            )
+            prompt_embeds = self._encode_prompt(
+                prompt,
+                self.text_encoder.device,
+                num_videos_per_prompt,
+                do_classifier_free_guidance,
+                negative_prompt,
+                prompt_embeds=prompt_embeds,
+                negative_prompt_embeds=negative_prompt_embeds,
+                lora_scale=text_encoder_lora_scale,
+                clip_skip=clip_skip,
+            )
+            print("各次元の要素数:", prompt_embeds.size(),batch_size)
 
 
         #strength=0.95
@@ -1070,58 +1311,71 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
         #(batch_size,num_videos_per_prompt,video_length)
         #print('データ生成',len(image))
 
-        if image_guide>0.0:
-            ims=None
-            if reference_image is not None:
-                if type(reference_image)!=list:
-                    reference_image=[reference_image]
-                ims=reference_image
-            if ims is None:
-                ims=[image[0]]
-            #initial_image=self.image_processor.preprocess(im)
-            #initial_latents2=self.prepare_initial_latents(
-            #    initial_image,latent_timestep,batch_size,num_videos_per_prompt,self.vae.dtype, device, generator
-            #)
-            #del 
-            initial_latents=[]
-            for im in ims:
-                im=self.image_processor.preprocess([im])
-                initial_latents.append(self.prepare_latents_image(
-                        im,latent_timestep,batch_size,1,num_videos_per_prompt,self.vae.dtype, device, generator
-                    ))
-            initial_latents2=torch.cat(initial_latents,dim=2)
-            print("初期化ベクトルサイズ initial_latents2 ",initial_latents2.size())
-            del initial_latents
-            del ims
+        with vae_with as vae:
+            if image_guide>0.0:
+                ims=None
+                if reference_image is not None:
+                    if type(reference_image)!=list:
+                        reference_image=[reference_image]
+                    ims=reference_image
+                if ims is None:
+                    ims=[image[0]]
+                #initial_image=self.image_processor.preprocess(im)
+                #initial_latents2=self.prepare_initial_latents(
+                #    initial_image,latent_timestep,batch_size,num_videos_per_prompt,self.vae.dtype, device, generator
+                #)
+                #del 
+                initial_latents=[]
+                for im in ims:
+                    im=self.image_processor.preprocess([im])
+                    initial_latents.append(self.prepare_latents_image(
+                            im,latent_timestep,batch_size,1,num_videos_per_prompt,self.vae.dtype, self.vae.device, generator
+                        ))
+                initial_latents2=torch.cat(initial_latents,dim=2)
+                print("初期化ベクトルサイズ initial_latents2 ",initial_latents2.size())
+                del initial_latents
+                del ims
 
-        latents=None
-        initial_latent=None
-        if len(image)==1:
-            im = self.image_processor.preprocess([image[0]])
-            latents=self.prepare_latents_image(im,latent_timestep,batch_size,video_length,num_videos_per_prompt,self.vae.dtype, latents_device, generator)
-        elif len(image)>1:
-            latents=[]
-            for i,im in enumerate(image):
-                im = self.image_processor.preprocess([im])
-                latents.append(self.prepare_latents_image(
-                    im,latent_timestep,batch_size,1,num_videos_per_prompt,self.vae.dtype, device, generator
-                ))
-            print("初期化ベクトルサイズ latents ",latents[0].size())
-            latents=torch.cat(latents,dim=2)
-            print("初期化ベクトルサイズ latents ",latents.size())
-        else:
-            latents = self.prepare_latents(
-                batch_size * num_videos_per_prompt,
-                num_channels_latents,
-                video_length,
-                height,
-                width,
-                prompt_embeds.dtype,
-                latents_device,  # keep latents on cpu for sequential mode
-                generator,
-                latents,
-            )
-        initial_latent=latents[:, :, 0]
+            latents=None
+            #initial_latent=None
+            if len(image)==1:
+                im = self.image_processor.preprocess([image[0]])
+                latents=self.prepare_latents_image(im,latent_timestep,batch_size,video_length,num_videos_per_prompt,self.vae.dtype, latents_device, generator)
+            elif len(image)>1:
+                latents=[]
+                for i,im in enumerate(image):
+                    im = self.image_processor.preprocess([im])
+                    latents.append(self.prepare_latents_image(
+                        im,latent_timestep,batch_size,1,num_videos_per_prompt,self.vae.dtype, self.vae.device, generator
+                    ))
+                print("初期化ベクトルサイズ latents ",latents[0].size())
+                latents=torch.cat(latents,dim=2)
+                print("初期化ベクトルサイズ latents ",latents.size())
+            else:
+                """                latents = self.prepare_latents_with_context(
+                    batch_size * num_videos_per_prompt,
+                    num_channels_latents,
+                    video_length,
+                    context_frames,
+                    height,
+                    width,
+                    prompt_embeds.dtype,
+                    latents_device,  # keep latents on cpu for sequential mode
+                    generator,
+                    latents,
+                )"""
+                latents=self.prepare_latents(
+                    batch_size * num_videos_per_prompt,
+                    num_channels_latents,
+                    video_length,
+                    height,
+                    width,
+                    prompt_embeds.dtype,
+                    latents_device,  # keep latents on cpu for sequential mode
+                    generator,
+                    latents,
+                )
+            #initial_latent=latents[:, :, 0]
 
         controlnet_image = None
         if canny_image is not None:
@@ -1178,12 +1432,12 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
             ]
             controlnet_keep.append(keeps[0] if isinstance(self.controlnet, ControlNetModel) else keeps)
         print("controlnet_keep",controlnet_keep)"""
-
         controlnet_keep1=compute_step_decay(len(timesteps),controlnet_conditioning_scale,int(len(timesteps)*controlnet_conditioning_end),0.0)#compute_exponential_decay(len(timesteps) ,controlnet_conditioning_scale, decay=0.9)
         controlnet_keep2=compute_step_decay(len(timesteps),controlnet_conditioning_start,1,0.0)
         controlnet_keep=[max(i,j) for i,j in zip(controlnet_keep1,controlnet_keep2)]
         print("controlnet_keep",controlnet_keep)
-        self.text_encoder.to(torch.device("cpu"))
+
+        #self.text_encoder.to(torch.device("cpu"))
         #self.feature_extractor.to(torch.device("cpu"))
         # 7. Denoising loop
         num_warmup_steps = len(timesteps) - num_inference_steps * self.scheduler.order
@@ -1193,19 +1447,6 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
 
                 #img2img guidenace step latents update
                 step=i
-                if i<=image_guide_step:
-                    #latents[:, :, 0]=initial_latent
-                    print(i,"重み更新",image_guide_step)
-                    #latents =self.adjust_latents_for_step(initial_latents,t,latents,0.05*(image_guide_step/len(timesteps)),dtype=self.vae.dtype, device=device, generator=generator)
-                    if image_guide>0.0:
-                        latents=(self.get_latents_for_step(initial_latents2,t,latents,dtype=self.vae.dtype, device=device, generator=generator))#*0.1)+(latents*0.9)
-
-
-
-                           # controlnet(s) inference
-
-
-
 
                 noise_pred = torch.zeros(
                     (latents.shape[0] * (2 if do_classifier_free_guidance else 1), *latents.shape[1:]),
@@ -1214,10 +1455,23 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                     #down_block_additional_residuals=down_block_res_samples,
                     #=mid_block_res_sample
                 )
+                print("noise_pred",noise_pred.size())
                 counter = torch.zeros(
                     (1, 1, latents.shape[2], 1, 1), device=latents.device, dtype=latents.dtype
                 )
 
+                if i<=image_guide_step:
+                    print(i,"重み更新",image_guide_step)
+                    if image_guide>0.0:
+                        latents=self.get_latents_for_step(initial_latents2,t,latents,dtype=self.vae.dtype, device=device, generator=generator)
+                        #decay_rate=((1.0-(i/num_inference_steps))**3)
+                        #shape = initial_latents2.shape
+                        #t2=ensure_one_dimension(t)
+                        #n2 = randn_tensor(shape, generator=generator, device=latents.device, dtype=latents.dtype)
+                        #il = self.scheduler.add_noise(initial_latents2.to(device=latents.device, dtype=latents.dtype), n2.to(device=latents.device), t2.to(device=latents.device))
+                        #initial_noise=latents[:, :, 0:latents.shape[2], :, :]-il.to(latents.device)
+                        #noise_pred[:, :, 0:initial_noise.shape[2], :, :]=initial_noise*decay_rate
+                        #counter[:, :, 0:initial_noise.shape[2]]+=decay_rate
 
                 # expand the latents if we are doing classifier free guidance
                 latent_model_input_all = (
@@ -1230,7 +1484,14 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
 
                 cond_scale =max(controlnet_keep[i],controlnet_conditioning_bias)
                 print("cond_scale",cond_scale)
+                unet_with=unet_with_vram
+                controlnet_enabled = False
+                if (cond_scale>0.005) and (controlnet_image is not None):
+                    controlnet_enabled = True
+                    unet_with=unet_with_lowmem
+                    unet_with.move(storage_device)
 
+            
                 for context in context_scheduler(
                     i, num_inference_steps, latents.shape[2], context_frames, context_stride, context_overlap
                 ):
@@ -1240,83 +1501,86 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                     latent_model_input=latent_model_input_all[:, :, context].to(device)
                     control_model_input = latent_model_input
 
+                    batch_down_block_res_samples=None
+                    batch_mid_block_res_sample=None
 
-                    down_block_res_samples=None
-                    mid_block_res_sample=None
                     #一度処理を行ったインデックスはスキップする
                     #if controlnet_image is not None:
-                    if (cond_scale>0.005) and (controlnet_image is not None):
-                        self.unet.to(torch.device("cpu"))
-                        self.vae.to(torch.device("cpu"))
-                        torch.cuda.empty_cache()
-                        self.controlnet.to(device,latents.dtype)
-                        # self.unet.to(torch.device("cpu"))
-                        # 結果を保存するためのリストを初期化
-                        all_down_block_res_samples = []
-                        all_mid_block_res_samples = []
-                        #self.controlnet.to(torch.device("cpu"),torch.float32)
-                        # context を分割する
-                        batch_size_per_subbatch =  2# 各サブバッチのバッチサイズ
-                        latents_context =[i for i in range(len(context))]
-                        batch_size=len(latents_context)
+                    if (controlnet_enabled):
+                        with controlnet_with as _:
 
-                        for z in range(0, batch_size, batch_size_per_subbatch):
-                            subbatch_context = context[z:z+batch_size_per_subbatch]
-                            print("subbatch_context",subbatch_context)
-                            subbatch_latents_context = latents_context[z:z+batch_size_per_subbatch]
-                            # controlnet_cond を作成
-                            #subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
-                            subbatch_controlnet_cond = controlnet_image[:, :, subbatch_context]
-                            if subbatch_controlnet_cond.shape[1]!=3:
-                                subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
-                            subbatch_controlnet_cond = subbatch_controlnet_cond.to(self.controlnet.device, self.controlnet.dtype)
-                            subbatch_controlnet_latents = control_model_input[:, :, subbatch_latents_context]
-                            print('count',i,z)
-                            print("subbatch_controlnet_cond",subbatch_controlnet_cond.size())
-                            #if( step==0 )or ((z)%4==0):
-                                #self.controlnet を呼び出す
-                            down_block_res_samples, mid_block_res_sample = self.controlnet(
-                                    subbatch_controlnet_latents.to(self.controlnet.device, self.controlnet.dtype),
-                                    t,
-                                    encoder_hidden_states=controlnet_prompt_embeds.to(self.controlnet.device, self.controlnet.dtype),
-                                    controlnet_cond=subbatch_controlnet_cond,
-                                    conditioning_scale=cond_scale,
-                                    return_dict=False,
-                            )
-                                #if zero_down_block_res_samples is None:
-                                #    zero_down_block_res_samples=[torch.zeros_like(d).to(torch.device('cpu'),self.controlnet.dtype) for d in down_block_res_samples]
-                                #if zero_mid_block_res_sample is None:
-                                #    zero_mid_block_res_sample=torch.zeros_like(mid_block_res_sample)
-                            #else:
-                            #    down_block_res_samples=zero_down_block_res_samples
-                            #    mid_block_res_sample=zero_mid_block_res_sample
-                            print("pipeline down_block_res_samples",down_block_res_samples[0].size(),len(down_block_res_samples),type(down_block_res_samples))
-                            print("mid_block_res_sample",mid_block_res_sample.size())
-                            # 結果をリストに追加
-                            all_down_block_res_samples.append([d.to(torch.device('cpu'),self.controlnet.dtype) for d in down_block_res_samples])
-                            all_mid_block_res_samples.append(mid_block_res_sample.to(torch.device('cpu'),self.controlnet.dtype))
+                            #low vram mode
+                            #if self.unet.device!=execute_device:
 
-                        self.controlnet.to(torch.device("cpu"))
-                        torch.cuda.empty_cache()
-                        self.unet.to(device)
-                        self.vae.to(device)
-                        torch.cuda.empty_cache()
-                        #コントロールネットを適用したインデックスを集合に追加
+                            #self.vae.to(torch.device("cpu"))
+                            #torch.cuda.empty_cache()
+                            #self.controlnet.to(device,latents.dtype)
+                            # self.unet.to(torch.device("cpu"))
+                            # 結果を保存するためのリストを初期化
+                            all_down_block_res_samples = []
+                            all_mid_block_res_samples = []
+                            #self.controlnet.to(torch.device("cpu"),torch.float32)
+                            # context を分割する
+                            batch_size_per_subbatch =  2# 各サブバッチのバッチサイズ
+                            latents_context =[i for i in range(len(context))]
+                            batch_size=len(latents_context)
 
-                        # リストをテンソルに変換して最終的な結果を得る
-                        down_block_res_samples = []
-                        for i in range(len(all_down_block_res_samples[0])):
-                            tmp=torch.cat([a[i] for a in all_down_block_res_samples], dim=2)
-                            down_block_res_samples.append(tmp)
-                        mid_block_res_sample = torch.cat(all_mid_block_res_samples, dim=2)
+                            for z in range(0, batch_size, batch_size_per_subbatch):
+                                subbatch_context = context[z:z+batch_size_per_subbatch]
+                                print("subbatch_context",subbatch_context)
+                                subbatch_latents_context = latents_context[z:z+batch_size_per_subbatch]
+                                # controlnet_cond を作成
+                                #subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
+                                subbatch_controlnet_cond = controlnet_image[:, :, subbatch_context]
+                                if subbatch_controlnet_cond.shape[1]!=3:
+                                    subbatch_controlnet_cond = torch.cat([controlnet_image[:, :, subbatch_context]] * 3, dim=1)
+                                subbatch_controlnet_cond = subbatch_controlnet_cond.to(self.controlnet.device, self.controlnet.dtype)
+                                subbatch_controlnet_latents = control_model_input[:, :, subbatch_latents_context]
+                                print('count',i,z)
+                                print("subbatch_controlnet_cond",subbatch_controlnet_cond.size())
+                                #if( step==0 )or ((z)%4==0):
+                                    #self.controlnet を呼び出す
+                                down_block_res_samples, mid_block_res_sample = self.controlnet(
+                                        subbatch_controlnet_latents.to(self.controlnet.device, self.controlnet.dtype),
+                                        t,
+                                        encoder_hidden_states=controlnet_prompt_embeds.to(self.controlnet.device, self.controlnet.dtype),
+                                        controlnet_cond=subbatch_controlnet_cond,
+                                        conditioning_scale=cond_scale,
+                                        return_dict=False,
+                                )
+                                    #if zero_down_block_res_samples is None:
+                                    #    zero_down_block_res_samples=[torch.zeros_like(d).to(torch.device('cpu'),self.controlnet.dtype) for d in down_block_res_samples]
+                                    #if zero_mid_block_res_sample is None:
+                                    #    zero_mid_block_res_sample=torch.zeros_like(mid_block_res_sample)
+                                #else:
+                                #    down_block_res_samples=zero_down_block_res_samples
+                                #    mid_block_res_sample=zero_mid_block_res_sample
+                                print("pipeline down_block_res_samples",down_block_res_samples[0].size(),len(down_block_res_samples),type(down_block_res_samples))
+                                print("mid_block_res_sample",mid_block_res_sample.size())
+                                # 結果をリストに追加
+                                all_down_block_res_samples.append([d.to(execute_device,self.controlnet.dtype) for d in down_block_res_samples])
+                                all_mid_block_res_samples.append(mid_block_res_sample.to(execute_device,self.controlnet.dtype))
+
+                            #self.controlnet.to(torch.device("cpu"))
+                            #torch.cuda.empty_cache()
+                            #self.unet.to(device)
+                            #self.vae.to(device)
+                            #torch.cuda.empty_cache()
+                            #コントロールネットを適用したインデックスを集合に追加
+
+                            # リストをテンソルに変換して最終的な結果を得る
+                            down_block_res_samples = []
+                            for i in range(len(all_down_block_res_samples[0])):
+                                tmp=torch.cat([a[i] for a in all_down_block_res_samples], dim=2)
+                                down_block_res_samples.append(tmp)
+                            mid_block_res_sample = torch.cat(all_mid_block_res_samples, dim=2)
 
 
-                        down_block_res_samples=[i.to(self.unet.device, self.unet.dtype) for i in down_block_res_samples]
-                        mid_block_res_sample=mid_block_res_sample.to(self.unet.device, self.unet.dtype)
+                            batch_down_block_res_samples=[i.to(execute_device, self.unet.dtype) for i in down_block_res_samples]
+                            batch_mid_block_res_sample=mid_block_res_sample.to(execute_device, self.unet.dtype)
 
-                        print("down_block_res_samples",down_block_res_samples[0].size(),len(down_block_res_samples))
-                        print("mid_block_res_sample",mid_block_res_sample.size())
-
+                            print("down_block_res_samples",batch_down_block_res_samples[0].size(),len(batch_down_block_res_samples))
+                            print("mid_block_res_sample",batch_mid_block_res_sample.size())
                     #if guess_mode and do_classifier_free_guidance:
                         # Infered ControlNet only for the conditional batch.
                         # To apply the output of ControlNet to both the unconditional and conditional batches,
@@ -1324,20 +1588,26 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                     #    down_block_res_samples = [torch.cat([torch.zeros_like(d), d]) for d in down_block_res_samples]
                     #    mid_block_res_sample = torch.cat([torch.zeros_like(mid_block_res_sample), mid_block_res_sample])
                     #self.unet.to(latents.device, self.unet.dtype)
-
+                    pred=None
+                    unet_with.move(unet_with.execute_device)
+                    #with unet_with as _:
                     # predict the noise residual
                     pred = self.unet(
                         latent_model_input.to(self.unet.device, self.unet.dtype),
                         t,
                         encoder_hidden_states=prompt_embeds,
                         cross_attention_kwargs=cross_attention_kwargs,
-                        down_block_additional_residuals=down_block_res_samples,
-                        mid_block_additional_residual=mid_block_res_sample,
+                        down_block_additional_residuals=batch_down_block_res_samples,
+                        mid_block_additional_residual=batch_mid_block_res_sample,
                         #residuals_ratio=cond_scale,
                         return_dict=False,
                     )[0]
-
-
+                    unet_with.move(unet_with.storage_device)
+                    print("pipeline do_classifier_free_guidance",do_classifier_free_guidance)
+                    print("pipeline latents",latents.size())
+                    print("pipeline latent_model_input",latent_model_input.size())
+                    print("pipeline pred",pred.size())
+                    print("pipeline noise_pred",noise_pred.size())
                     pred = pred.to(dtype=latents.dtype, device=latents.device)
                     noise_pred[:, :, context] = noise_pred[:, :, context] + pred
                     counter[:, :, context] = counter[:, :, context] + 1
@@ -1358,7 +1628,17 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                     return_dict=False,
                 )[0]
 
+
+                #if(i==0):
+                    #latents=calculate_weighted_moving_average(latents, decay_rate=0.5, window=context_frames,num_frames_to_consider=2,start_frame=context_frames)
+                    #latents=calculate_weighted_moving_average_with_dynamic_correction(latents, decay_rate=0.5, window=context_frames,num_frames_to_consider=2,start_frame=context_frames)
+                #elif(i<(num_inference_steps//4)):
+                    #decay_rate=0.01*((1.0-(i/num_inference_steps))**3)
+                    #latents=calculate_weighted_moving_average(latents, decay_rate=decay_rate,window=context_frames,num_frames_to_consider=2,start_frame=context_frames)
+                    #latents=calculate_weighted_moving_average_with_dynamic_correction(latents, decay_rate=decay_rate, window=context_frames,num_frames_to_consider=2,start_frame=context_frames)
+
                 # call the callback, if provided
+
                 if i == len(timesteps) - 1 or (
                     (i + 1) > num_warmup_steps and (i + 1) % self.scheduler.order == 0
                 ):
@@ -1366,25 +1646,26 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                         callback(i, t, latents)
 
         # Return latents if requested (this will never be a dict)
-            self.unet.to(torch.device("cpu"))
-            self.controlnet.to(torch.device("cpu"))
-            self.vae.to(torch.device("cpu"))
-            latents.to(torch.device("cpu"))
-            torch.cuda.empty_cache()
-        self.vae.to(torch.device(device))
-        if not output_type == "latent":
-            video = self.decode_latents(latents)
-        else:
-            video = latents
+            #self.unet.to(torch.device("cpu"))
+            #self.controlnet.to(torch.device("cpu"))
+            #self.vae.to(torch.device("cpu"))
+            #latents.to(torch.device("cpu"))
+            #torch.cuda.empty_cache()
+        #self.vae.to(torch.device(device))
+        with vae_with as _:
+            if not output_type == "latent":
+                video = self.decode_latents(latents)
+            else:
+                video = latents
 
-        # Convert to tensor
-        if output_type == "tensor":
-            video = torch.from_numpy(video)
+            # Convert to tensor
+            if output_type == "tensor":
+                video = torch.from_numpy(video)
 
-        # Offload last model to CPU
-        if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
-            self.final_offload_hook.offload()
-        self.vae.to(torch.device("cpu"))
+            # Offload last model to CPU
+            if hasattr(self, "final_offload_hook") and self.final_offload_hook is not None:
+                self.final_offload_hook.offload()
+        #self.vae.to(torch.device("cpu"))
         if not return_dict:
             return video
 
@@ -1418,3 +1699,8 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
         _ = self.vae.eval()
         self.vae = self.vae.requires_grad_(False)
         self.vae.train = nop_train
+
+        if(self.controlnet is not None):
+            _ = self.controlnet.eval()
+            self.controlnet = self.controlnet.requires_grad_(False)
+            self.controlnet.train = nop_train
