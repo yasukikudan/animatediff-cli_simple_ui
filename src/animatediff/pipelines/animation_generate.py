@@ -1538,8 +1538,6 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                                 subbatch_controlnet_latents = control_model_input[:, :, subbatch_latents_context]
                                 print('count',i,z)
                                 print("subbatch_controlnet_cond",subbatch_controlnet_cond.size())
-                                #if( step==0 )or ((z)%4==0):
-                                    #self.controlnet を呼び出す
                                 down_block_res_samples, mid_block_res_sample = self.controlnet(
                                         subbatch_controlnet_latents.to(self.controlnet.device, self.controlnet.dtype),
                                         t,
@@ -1548,25 +1546,12 @@ class AnimationGeneratePipeline(DiffusionPipeline, TextualInversionLoaderMixin):
                                         conditioning_scale=cond_scale,
                                         return_dict=False,
                                 )
-                                    #if zero_down_block_res_samples is None:
-                                    #    zero_down_block_res_samples=[torch.zeros_like(d).to(torch.device('cpu'),self.controlnet.dtype) for d in down_block_res_samples]
-                                    #if zero_mid_block_res_sample is None:
-                                    #    zero_mid_block_res_sample=torch.zeros_like(mid_block_res_sample)
-                                #else:
-                                #    down_block_res_samples=zero_down_block_res_samples
-                                #    mid_block_res_sample=zero_mid_block_res_sample
                                 print("pipeline down_block_res_samples",down_block_res_samples[0].size(),len(down_block_res_samples),type(down_block_res_samples))
                                 print("mid_block_res_sample",mid_block_res_sample.size())
                                 # 結果をリストに追加
                                 all_down_block_res_samples.append([d.to(execute_device,self.controlnet.dtype) for d in down_block_res_samples])
                                 all_mid_block_res_samples.append(mid_block_res_sample.to(execute_device,self.controlnet.dtype))
 
-                            #self.controlnet.to(torch.device("cpu"))
-                            #torch.cuda.empty_cache()
-                            #self.unet.to(device)
-                            #self.vae.to(device)
-                            #torch.cuda.empty_cache()
-                            #コントロールネットを適用したインデックスを集合に追加
 
                             # リストをテンソルに変換して最終的な結果を得る
                             down_block_res_samples = []

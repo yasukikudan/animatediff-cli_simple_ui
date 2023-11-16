@@ -100,7 +100,7 @@ def generate_output_filename(out_dir, idx, seed, prompt):
     prompt_tags = [re_clean_prompt.sub("", tag).strip().replace(" ", "-") for tag in prompt.split(",")]
     prompt_str = "_".join((prompt_tags[:6]))
     now = datetime.now().strftime("%Y%m%d_%H%M%S")
-    return Path(out_dir).joinpath(f"{idx:02d}_{seed}_{prompt_str}_{now}.webp")
+    return Path(out_dir).joinpath((f"{idx:02d}_{seed}_{prompt_str}_{now}")[:100]+".webp")
 
 #@profile
 def main(page: ft.Page):
