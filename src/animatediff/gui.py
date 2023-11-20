@@ -235,6 +235,7 @@ def main(page: ft.Page):
         save_animation(res,out_file)
 
         src_base64=image_to_animetion_base64(res,8)
+        print(out_file.resolve().name)
         preview_img.src_base64=src_base64
         preview_img.update()
 
@@ -298,6 +299,7 @@ def main(page: ft.Page):
 
     preview_img = ft.Image(
         fit=ft.ImageFit.FIT_WIDTH,
+        src=f'welcome.webp'
     )
 
 
@@ -313,7 +315,7 @@ def main(page: ft.Page):
 
 
 # Running the application
-ft.app(target=main,port=8550, view=ft.WEB_BROWSER)
+ft.app(target=main,port=8550, view=ft.WEB_BROWSER,assets_dir="data_test")
 
 
 
