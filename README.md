@@ -7,3 +7,13 @@
 - **省メモリ実装**: 10GBのVRAMで高解像度かつ長時間の動画生成を実現。
 - **シンプルなGUI**: fletライブラリにより、直感的な操作性を提供。
 - **高度な動画生成**: コントロールネットを使用した詳細な動画制御が可能。
+
+## アニメーションサンプル
+![サンプル](https://raw.githubusercontent.com/yasukikudan/animatediff-cli_simple_ui/main/generate_anime_sample.webp)
+
+## 画像構成
+![サンプル](https://raw.githubusercontent.com/yasukikudan/animatediff-cli_simple_ui/main/simpe_ui_image.png)
+
+## 使い方
+
+ToDo
