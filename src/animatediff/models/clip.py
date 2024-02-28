@@ -1,7 +1,6 @@
 from typing import Optional, Tuple, Union
 
 import torch
-from torch import Tensor, nn
 from transformers.modeling_outputs import BaseModelOutput, BaseModelOutputWithPooling
 from transformers.modeling_attn_mask_utils import _prepare_4d_attention_mask, _create_4d_causal_attention_mask
 from transformers.models.clip import CLIPPreTrainedModel, CLIPTextConfig, CLIPTextModel

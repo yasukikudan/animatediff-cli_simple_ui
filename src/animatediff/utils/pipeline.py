@@ -43,6 +43,7 @@ def send_to_device(
             logger.warn("Model compilation is experimental and may not work as expected!")
             pipeline.unet = torch.compile(
                 pipeline.unet,
+                fullgraph=False,
                 backend="inductor",
                 mode="reduce-overhead",
             )
@@ -61,7 +62,7 @@ def get_context_params(
     if context is None:
         context = min(length, 16)
     if overlap is None:
-        overlap = context // 2
+        overlap = context // 4
     if stride is None:
-        stride = 4
+        stride = 0
     return context, overlap, stride

@@ -240,6 +240,7 @@ src/animatediff/_version.py
 .env*
 !.envrc.example
 
+<<<<<<< HEAD
 input/
 output/
 video_dir/
@@ -250,3 +251,7 @@ back/
 mprofile_*
 *.ol
 *コピー*
+=======
+# torch compile debug logs
+/torch_compile_debug/
+>>>>>>> master/main

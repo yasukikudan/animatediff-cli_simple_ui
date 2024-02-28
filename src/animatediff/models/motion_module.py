@@ -3,13 +3,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 import torch
-import torch.nn.functional as F
-import xformers.ops as xops
 from diffusers.models.attention import Attention, FeedForward
 from diffusers.utils import BaseOutput
 from diffusers.utils.torch_utils import maybe_allow_in_graph
 from einops import rearrange, repeat
 from torch import Tensor, nn
+from torch._dynamo import allow_in_graph
 
 
 def zero_module(module):
@@ -71,7 +70,7 @@ class VanillaTemporalModule(nn.Module):
         return output
 
 
-@maybe_allow_in_graph
+@allow_in_graph
 class TemporalTransformer3DModel(nn.Module):
     def __init__(
         self,
@@ -162,7 +161,7 @@ class TemporalTransformer3DModel(nn.Module):
         return output
 
 
-@maybe_allow_in_graph
+@allow_in_graph
 class TemporalTransformerBlock(nn.Module):
     def __init__(
         self,
@@ -248,7 +247,7 @@ class PositionalEncoding(nn.Module):
         return self.dropout(x)
 
 
-@maybe_allow_in_graph
+@allow_in_graph
 class VersatileAttention(Attention):
     def __init__(
         self,

@@ -2,14 +2,14 @@ import logging
 import re
 from os import PathLike
 from pathlib import Path
-from typing import Union
+from typing import Optional, Union
 
 import cv2
 import numpy as np
 import PIL
 import torch
-from diffusers import AutoencoderKL, ControlNetModel, StableDiffusionPipeline
-from transformers import CLIPImageProcessor, CLIPTextModel, CLIPTokenizer
+from diffusers import AutoencoderKL, StableDiffusionPipeline
+from transformers import CLIPImageProcessor, CLIPTokenizer
 
 from animatediff import get_dir
 from animatediff.models.clip import CLIPSkipTextModel
@@ -122,6 +122,8 @@ def create_pipeline(
     """Create an AnimationPipeline from a pretrained model.
     Uses the base_model argument to load or download the pretrained reference pipeline model."""
 
+    logger.info("Loading pipeline components...")
+
     # make sure motion_module is a Path and exists
     logger.info("Checking motion module...")
     controlnet_model=model_config.controlnet
@@ -136,13 +138,13 @@ def create_pipeline(
             # this should never happen, but just in case...
             raise FileNotFoundError(f"Motion module {motion_module} does not exist or is not a file!")
 
-    logger.info("Loading tokenizer...")
+    logger.debug("Loading tokenizer...")
     tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(base_model, subfolder="tokenizer")
-    logger.info("Loading text encoder...")
+    logger.debug("Loading text encoder...")
     text_encoder: CLIPSkipTextModel = CLIPSkipTextModel.from_pretrained(base_model, subfolder="text_encoder")
-    logger.info("Loading VAE...")
+    logger.debug("Loading VAE...")
     vae: AutoencoderKL = AutoencoderKL.from_pretrained(base_model, subfolder="vae")
-    logger.info("Loading UNet...")
+    logger.debug("Loading UNet...")
     unet: UNet3DConditionModel = UNet3DConditionModel.from_pretrained_2d(
         pretrained_model_path=base_model,
         motion_module_path=motion_module,
@@ -162,8 +164,17 @@ def create_pipeline(
 
     # Load the checkpoint weights into the pipeline
     if model_config.path is not None:
-        model_path = data_dir.joinpath(model_config.path)
-        logger.info(f"Loading weights from {model_path}")
+        # Resolve the input model path
+        model_path = Path(model_config.path).resolve()
+        if model_path.exists():
+            # if the absolute model path exists, use it unmodified
+            logger.info(f"Loading weights from {model_path}")
+        else:
+            # otherwise search for the model path relative to the data directory
+            model_path = data_dir.joinpath(model_config.path).resolve()
+            logger.info(f"Loading weights from {model_path}")
+
+        # Identify whether we have a checkpoint or a HF data dir and load appropriately
         if model_path.is_file():
             logger.debug("Loading from single checkpoint file")
             unet_state_dict, tenc_state_dict, vae_state_dict = get_checkpoint_weights(model_path)
@@ -246,6 +257,9 @@ def run_inference(
     clip_skip: int = 1,
     return_dict: bool = False,
 ):
+    if prompt is None and prompt_map is None:
+        raise ValueError("prompt and prompt_map cannot both be None, one must be provided")
+
     out_dir = Path(out_dir)  # ensure out_dir is a Path
 
     if seed != -1:
@@ -295,11 +309,13 @@ def run_inference(
     logger.info("Generation complete, saving...")
 
     # Trim and clean up the prompt for filename use
-    prompt_tags = [re_clean_prompt.sub("", tag).strip().replace(" ", "-") for tag in prompt.split(",")]
+    prompt_str = prompt or next(iter(prompt_map.values()))
+    prompt_tags = [re_clean_prompt.sub("", tag).strip().replace(" ", "-") for tag in prompt_str.split(",")]
     prompt_str = "_".join((prompt_tags[:6]))
 
     # generate the output filename and save the video
-    out_file = out_dir.joinpath(f"{idx:02d}_{seed}_{prompt_str}.gif")
+    out_str = f"{idx:02d}_{seed}_{prompt_str}"[:250]
+    out_file = out_dir.joinpath(f"{out_str}.gif")
     if return_dict is True:
         save_video(pipeline_output["videos"], out_file)
     else:

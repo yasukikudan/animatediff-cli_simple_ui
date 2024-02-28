@@ -17,7 +17,7 @@ from animatediff.settings import (CKPT_EXTENSIONS, InferenceConfig,
                                   get_model_config)
 from animatediff.utils.model import checkpoint_to_pipeline, get_base_model
 from animatediff.utils.pipeline import get_context_params, send_to_device
-from animatediff.utils.util import path_from_cwd, save_frames, save_video
+from animatediff.utils.util import relative_path, save_frames, save_video
 
 cli: typer.Typer = typer.Typer(
     context_settings=dict(help_option_names=["-h", "--help"]),
@@ -34,7 +34,11 @@ logging.basicConfig(
     format="%(message)s",
     datefmt="%H:%M:%S",
     handlers=[
-        RichHandler(console=console, rich_tracebacks=True),
+        RichHandler(
+            console=console,
+            rich_tracebacks=True,
+            omit_repeated_times=False,
+        ),
     ],
     force=True,
 )
@@ -101,7 +105,7 @@ def generate(
             "--height",
             "-H",
             min=512,
-            max=2160,
+            max=3840,
             help="Height of generated frames",
             rich_help_panel="Generation",
         ),
@@ -112,7 +116,7 @@ def generate(
             "--length",
             "-L",
             min=1,
-            max=9999,
+            max=10000,
             help="Number of frames to generate",
             rich_help_panel="Generation",
         ),
@@ -136,7 +140,7 @@ def generate(
             "-O",
             min=1,
             max=12,
-            help="Number of frames to overlap in context (default: context//2)",
+            help="Number of frames to overlap in context (default: context//4)",
             show_default=False,
             rich_help_panel="Generation",
         ),
@@ -146,9 +150,9 @@ def generate(
         typer.Option(
             "--stride",
             "-S",
-            min=1,
+            min=0,
             max=8,
-            help="Max motion stride as a power of 2 (default: 4)",
+            help="Max motion stride as a power of 2 (default: 0)",
             show_default=False,
             rich_help_panel="Generation",
         ),
@@ -241,7 +245,7 @@ def generate(
     set_diffusers_verbosity_error()
 
     config_path = config_path.absolute()
-    logger.info(f"Using generation config: {path_from_cwd(config_path)}")
+    logger.info(f"Using generation config: {relative_path(config_path)}")
     model_config: ModelConfig = get_model_config(config_path)
     infer_config: InferenceConfig = get_infer_config()
 
@@ -262,7 +266,7 @@ def generate(
     # make the output directory
     save_dir = out_dir.joinpath(f"{time_str}-{model_config.save_name}")
     save_dir.mkdir(parents=True, exist_ok=True)
-    logger.info(f"Will save outputs to ./{path_from_cwd(save_dir)}")
+    logger.info(f"Will save outputs to ./{relative_path(save_dir)}")
 
     # beware the pipeline
     global pipeline
@@ -293,8 +297,8 @@ def generate(
     save_config_path = save_dir.joinpath("prompt.json")
     save_config_path.write_text(model_config.json(), encoding="utf-8")
 
-    num_prompts = len(model_config.prompt)
-    num_negatives = len(model_config.n_prompt)
+    num_prompts = len(model_config.prompts)
+    num_negatives = len(model_config.n_prompts)
     num_seeds = len(model_config.seed)
     gen_total = num_prompts * repeats  # total number of generations
 
@@ -318,13 +322,18 @@ def generate(
     gen_num = 0  # global generation index
     # repeat the prompts if we're doing multiple runs
     for _ in range(repeats):
-        for prompt in model_config.prompt:
+        for prompt in model_config.prompts:
             # get the index of the prompt, negative, and seed
             idx = gen_num % num_prompts
             logger.info(f"Running generation {gen_num + 1} of {gen_total} (prompt {idx + 1})")
 
+            if isinstance(prompt, dict):
+                logger.info("Using prompt travel map...")
+                prompt_map = prompt
+                prompt = None  # not used
+
             # allow for reusing the same negative prompt(s) and seed(s) for multiple prompts
-            n_prompt = model_config.n_prompt[idx % num_negatives]
+            n_prompt = model_config.n_prompts[idx % num_negatives]
             seed = seed = model_config.seed[idx % num_seeds]
 
             # duplicated in run_inference, but this lets us use it for frame save dirs
@@ -336,6 +345,7 @@ def generate(
             output = run_inference(
                 pipeline=pipeline,
                 prompt=prompt,
+                prompt_map=prompt_map,
                 n_prompt=n_prompt,
                 seed=seed,
                 steps=model_config.steps,

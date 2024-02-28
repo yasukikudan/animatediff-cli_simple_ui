@@ -22,7 +22,7 @@ from animatediff.settings import (CKPT_EXTENSIONS, InferenceConfig,
                                   get_model_config,get_pipeline_config)
 from animatediff.utils.model import checkpoint_to_pipeline, get_base_model
 from animatediff.utils.pipeline import get_context_params, send_to_device
-from animatediff.utils.util import path_from_cwd, save_frames, save_video,encode_frames,save_animation,save_images
+from animatediff.utils.util import save_frames, save_video,encode_frames,save_animation,save_images
 import gc
 import random
 import sys
@@ -141,7 +141,7 @@ def main(page: ft.Page):
             'strength': float(strength_slider.value)/100.0,
             'canny_image': canny_image_field.value if len(canny_image_field.value)>0 else None,
             'reference_image':reference_image_field.value if len(reference_image_field.value)>0 else None,
-            'image_guide': image_guide_slider.value,
+            'image_guide': float(image_guide_slider.value)/100.0,
             'width': int(width_slider.value),
             'height': int(height_slider.value),
             'duration': duration_slider.value,
@@ -221,7 +221,7 @@ def main(page: ft.Page):
         ]
     )
     reference_image_field = ft.TextField(label="reference_image",value=None)
-    image_guide_slider = ft.Slider(min=0.0, max=1.0, divisions=100,value=0.0,label="image_guide: {value}%", on_change=create_validator(float))
+    image_guide_slider = ft.Slider(min=0.0, max=100., divisions=100,value=0.0,label="image_guide: {value}%", on_change=create_validator(float))
     schedule_dropdown = ft.Dropdown(
         value="continuous2",
         options=[
