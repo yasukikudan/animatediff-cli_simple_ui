@@ -13,6 +13,7 @@ from diffusers.schedulers import (
     LMSDiscreteScheduler,
     PNDMScheduler,
     UniPCMultistepScheduler,
+    LCMScheduler
 )
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,8 @@ class DiffusionScheduler(str, Enum):
     unipc = "unipc"  # UniPC
     euler = "euler"  # Euler
     euler_a = "euler_a"  # Euler a
+
+    lcm = "lcm"
 
     lms = "lms"  # LMS
     k_lms = "k_lms"  # LMS Karras
@@ -68,6 +71,8 @@ def get_scheduler(name: str, config: dict = {}):
             sched_class = EulerAncestralDiscreteScheduler
         case DiffusionScheduler.lms:
             sched_class = LMSDiscreteScheduler
+        case DiffusionScheduler.lcm:
+            sched_class = LCMScheduler
         case DiffusionScheduler.dpm_2:
             # Equivalent to DPM2 in K-Diffusion
             sched_class = KDPM2DiscreteScheduler

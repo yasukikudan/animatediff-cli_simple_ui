@@ -93,6 +93,16 @@ def get_infer_config(
     return settings
 
 
+def get_pipeline_config(
+        config_path: Path = get_dir("config").joinpath("pipeline/default.json"),
+):
+    # 設定ファイルの読み込み
+    with open(config_path, 'r') as config_file:
+        config = json.load(config_file)
+        return config
+
+
+
 class ModelConfig(BaseSettings):
     name: str = Field(...)  # Config name, not actually used for much of anything
     base: Optional[Path] = Field(None)  # Path to base checkpoint (if using a LoRA)

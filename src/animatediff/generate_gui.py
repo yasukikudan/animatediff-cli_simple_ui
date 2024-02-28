@@ -126,6 +126,7 @@ def create_pipeline(
     motion_module_path: Union[str, PathLike]= None,
     scheduler_type: str= 'k_dpmpp_2m',
     checkpoint_path: Union[str, PathLike] = None,
+    lora_path : Union[str, PathLike] = None,
     use_xformers: bool = True,
     infer_config: InferenceConfig = get_infer_config(),
 ) -> AnimationGeneratePipeline:
@@ -147,16 +148,16 @@ def create_pipeline(
             raise FileNotFoundError(f"Motion module {motion_module} does not exist or is not a file!")
 
     logger.info("Loading base model...")
-    temp_pipeline = StableDiffusionPipeline.from_single_file(checkpoint_path)
+    #temp_pipeline = StableDiffusionPipeline.from_single_file(checkpoint_path)
     logger.info("Loading tokenizer...")
     print(base_model)
-    tokenizer: CLIPTokenizer = temp_pipeline.tokenizer
-    #tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(base_model, subfolder="tokenizer")
+    #tokenizer: CLIPTokenizer = temp_pipeline.tokenizer
+    tokenizer: CLIPTokenizer = CLIPTokenizer.from_pretrained(base_model, subfolder="tokenizer")
     logger.info("Loading text encoder...")
     text_encoder: CLIPSkipTextModel = CLIPSkipTextModel.from_pretrained(base_model, subfolder="text_encoder").to(dtype=torch.float16)
     logger.info("Loading VAE...")
-    vae: AutoencoderKL = temp_pipeline.vae
-    #vae: AutoencoderKL = AutoencoderKL.from_pretrained(base_model, subfolder="vae")
+    #vae: AutoencoderKL = temp_pipeline.vae
+    vae: AutoencoderKL = AutoencoderKL.from_pretrained(base_model, subfolder="vae")
     logger.info("Loading UNet...")
     unet: UNet3DConditionModel = UNet3DConditionModel.from_pretrained_2d(
         pretrained_model_path=base_model,
@@ -167,7 +168,7 @@ def create_pipeline(
     logger.info("Loading ControlNet...")
     controlnet = ControlNetModel3D.from_pretrained_2d(controlnet_model).to(dtype=torch.float16)
 
-    feature_extractor = temp_pipeline.feature_extractor #CLIPImageProcessor.from_pretrained(base_model, subfolder="feature_extractor")
+    feature_extractor = CLIPImageProcessor.from_pretrained(base_model, subfolder="feature_extractor")
 
     # set up scheduler
     sched_kwargs = infer_config.noise_scheduler_kwargs
@@ -178,36 +179,38 @@ def create_pipeline(
     if checkpoint_path is not None:
         model_path = Path(checkpoint_path)
         logger.info(f"Loading weights from {model_path}")
+        temp_pipeline=None
         if model_path.is_file():
             logger.debug("Loading from single checkpoint file")
-            unet_state_dict, tenc_state_dict, vae_state_dict = get_checkpoint_weights(model_path)
+            temp_pipeline = StableDiffusionPipeline.from_single_file(checkpoint_path)
+            #unet_state_dict, tenc_state_dict, vae_state_dict = get_checkpoint_weights(model_path)
         elif model_path.is_dir():
             logger.debug("Loading from Diffusers model directory")
             temp_pipeline = StableDiffusionPipeline.from_pretrained(model_path)
-            unet_state_dict, tenc_state_dict, vae_state_dict = (
-                temp_pipeline.unet.state_dict(),
-                temp_pipeline.text_encoder.state_dict(),
-                temp_pipeline.vae.state_dict(),
-            )
             #del temp_pipeline
         else:
             raise FileNotFoundError(f"model_path {model_path} is not a file or directory")
 
+        unet_state_dict, tenc_state_dict, vae_state_dict = (
+                temp_pipeline.unet.state_dict(),
+                temp_pipeline.text_encoder.state_dict(),
+                temp_pipeline.vae.state_dict(),
+        )
         # Load into the unet, TE, and VAE
         logger.info("Merging weights into UNet...")
         _, unet_unex = unet.load_state_dict(unet_state_dict, strict=False)
         if len(unet_unex) > 0:
             raise ValueError(f"UNet has unexpected keys: {unet_unex}")
-        tenc_missing, _ = text_encoder.load_state_dict(tenc_state_dict, strict=False)
-        if len(tenc_missing) > 0:
-            raise ValueError(f"TextEncoder has missing keys: {tenc_missing}")
+        #tenc_missing, _ = text_encoder.load_state_dict(tenc_state_dict, strict=False)
+        #if len(tenc_missing) > 0:
+        #    raise ValueError(f"TextEncoder has missing keys: {tenc_missing}")
         vae_missing, _ = vae.load_state_dict(vae_state_dict, strict=False)
         if len(vae_missing) > 0:
             raise ValueError(f"VAE has missing keys: {vae_missing}")
 
     else:
         logger.info("Using base model weights (no checkpoint/LoRA)")
-    del temp_pipeline
+    #del temp_pipeline
     # enable xformers if available
     if use_xformers:
         logger.info("Enabling xformers memory-efficient attention")

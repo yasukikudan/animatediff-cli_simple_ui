@@ -21,7 +21,10 @@ from diffusers.schedulers import (DDIMScheduler, DPMSolverMultistepScheduler,
                                   EulerDiscreteScheduler, LMSDiscreteScheduler,
                                   PNDMScheduler)
 from diffusers.utils import (BaseOutput, deprecate, is_accelerate_available,
-                             is_accelerate_version, randn_tensor)
+                             is_accelerate_version)
+
+
+from diffusers.utils.torch_utils import randn_tensor
 from einops import rearrange
 from packaging import version
 from tqdm.rich import tqdm

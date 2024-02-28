@@ -242,7 +242,7 @@ src/animatediff/_version.py
 
 input/
 output/
-data_test/
+video_dir/
 *.old*
 *.back*
 back/

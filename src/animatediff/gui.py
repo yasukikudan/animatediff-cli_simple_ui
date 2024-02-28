@@ -2,7 +2,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Annotated, Optional
-
+import json
 import flet as ft
 
 import json
@@ -19,19 +19,13 @@ from animatediff.generate_gui import create_pipeline, run_inference,refresh_pipe
 from animatediff.pipelines import AnimationPipeline, load_text_embeddings
 from animatediff.settings import (CKPT_EXTENSIONS, InferenceConfig,
                                   ModelConfig, get_infer_config,
-                                  get_model_config)
+                                  get_model_config,get_pipeline_config)
 from animatediff.utils.model import checkpoint_to_pipeline, get_base_model
 from animatediff.utils.pipeline import get_context_params, send_to_device
 from animatediff.utils.util import path_from_cwd, save_frames, save_video,encode_frames,save_animation,save_images
-
-#import tracemalloc
-#from memory_profiler import profile
 import gc
-
-
 import random
 import sys
-#tracemalloc.start()
 
 
 cli: typer.Typer = typer.Typer(
@@ -44,9 +38,9 @@ data_dir = get_dir("data")
 checkpoint_dir = data_dir.joinpath("models/sd")
 pipeline_dir = data_dir.joinpath("models/huggingface")
 
-
-negative_prompt_default="worst quality,low quality,bad anatomy,missing fingers,bad fingers,missing fingers,blurry,bokeh, blur,jpeg, gausian noise, block noise,cropped, lowres, text, multiple view,block noise,pixelated,unfocused,grainy"
 positive_prompt_default="(anime,masterpiece,best quality:1.1),"
+negative_prompt_default="worst quality,low quality,bad anatomy,missing fingers,bad fingers,missing fingers,blurry,bokeh, blur,jpeg, gausian noise, block noise,cropped, lowres, text, multiple view,block noise,pixelated,unfocused,grainy"
+
 
 
 
@@ -60,18 +54,19 @@ infer=get_infer_config()
 print(infer)    
 device: torch.device = torch.device('cuda')
 
-pipeline=create_pipeline(
-    base_model="data/models/huggingface/stable-diffusion-v1-5/",
-    #base_model="data/models/sd/ar100.safetensors",
-    #controlnet_model="data/models/controlnet/control_v11p_sd15_canny",
-    #controlnet_model="data/models/controlnet/controlnetmediapipeface",
-    controlnet_model="data/models/controlnet/control_v11e_sd15_ip2p",
-    checkpoint_path="data/models/sd/ar100.safetensors",
-    #checkpoint_path="data/models/sd/shemale.safetensors",
-    motion_module_path="data/models/motion-module/mm_sd_v14.safetensors",
-    scheduler_type="k_dpmpp_2m",
-    use_xformers=False,
-    infer_config=infer
+
+
+config = get_pipeline_config()
+
+# パイプラインの作成に設定を使用
+pipeline = create_pipeline(
+    base_model=config["base_model"],
+    controlnet_model=config["controlnet_model"],
+    checkpoint_path=config["checkpoint_path"],
+    motion_module_path=config["motion_module_path"],
+    scheduler_type=config["scheduler_type"],
+    use_xformers=config["use_xformers"],
+    infer_config=infer  # 既存の変数をそのまま使用
 )
 
 
@@ -180,45 +175,11 @@ def main(page: ft.Page):
         with open(json_filepath, 'w') as json_file:
             json.dump(params, json_file, indent=4)
         
-        #pipeline = send_to_device(
-        #    pipeline, device, freeze=True, force_half=False, compile=False
-        #)   
 
-        #pipeline.vae = torch.quantization.quantize_dynamic(
-       # pipeline.vae,  # the original model
-        #{torch.nn.Linear},  # a set of layers to dynamically quantize
-        #dtype=torch.qint8
-        #) 
 
         res=run_inference(
             pipeline=pipeline,
             **params
-            
- #           prompt=prompt_field.value,
- #           n_prompt=n_prompt_field.value,
- #           seed=seed_field.value,
- #           steps=steps_slider.value,
- #           guidance_scale=guidance_scale_slider.value,
- #           image=image_field.value,
- #           strength=strength_slider.value,
- #           canny_image=canny_image_field.value if len(canny_image_field.value)>0 else None,
- #           reference_image=reference_image_field.value if len(reference_image_field.value)>0 else None,
- #           image_guide=image_guide_slider.value,
- #           width=width_slider.value,
- #           height=height_slider.value,
- #           duration=duration_slider.value,
- #           idx=0,
- #           out_dir=out_dir_field.value,
- #           context_frames=16,
- #           context_stride=3,
- #           context_overlap=4,
- #           context_schedule=None,
- #           controlnet_conditioning_scale=controlnet_conditioning_scale_slider.value,
- #           controlnet_conditioning_start=controlnet_conditioning_start_slider.value,
- #           controlnet_conditioning_end=controlnet_conditioning_end_slider.value,
- #           controlnet_conditioning_bias=controlnet_conditioning_bias_slider.value,
- #           controlnet_preprocessing='canny',
- #           clip_skip=2
         )
 
         #保存先のファイル名を生成
@@ -239,19 +200,6 @@ def main(page: ft.Page):
         preview_img.src_base64=src_base64
         preview_img.update()
 
-        #pipeline = send_to_device(
-        #    pipeline, device, freeze=True, force_half=False, compile=False
-        #)   
-        """        snapshot = tracemalloc.take_snapshot()
-        top_stats = snapshot.statistics('lineno')
-
-        total_memory = sum(stat.size for stat in snapshot.statistics('lineno'))
-        print(f"Total memory used: {total_memory} bytes")
-
-        print("[ Top 10 ]")
-        for stat in top_stats[:10]:
-            print(stat)
-        del res"""
         pipeline = refresh_pipeline(pipeline)
         gc.collect()
 
@@ -264,7 +212,7 @@ def main(page: ft.Page):
     guidance_scale_slider = ft.Slider(min=0.0, max=20.0, divisions=40,value=7.5, label="guidance_scale: {value}", on_change=create_validator(float))
     image_field = ft.TextField(label="image")
     strength_slider = ft.Slider(min=0.0, max=100.0, divisions=100,value=100.0 ,label="strength:{value}%", on_change=create_validator(float))
-    canny_image_field = ft.TextField(label="canny_image",value=None)
+    canny_image_field = ft.TextField(label="controllnet_image",value=None)
     controlnet_preprocessing_field = ft.Dropdown(
         value="none",
         options=[
@@ -283,12 +231,10 @@ def main(page: ft.Page):
             ft.dropdown.Option("continuous3"),
         ]
     )
-    #width_slider = ft.Slider(min=0, max=2048, divisions=256, label="width: {value}", value=512,    on_change=create_validator(int))
-    #height_slider = ft.Slider(min=0, max=2048, divisions=256, label="height: {value}",value=512,   on_change=create_validator(int))
     width_slider = ft.TextField(label="width",value=600,keyboard_type=ft.KeyboardType.NUMBER)
     height_slider = ft.TextField(label="height",value=800,keyboard_type=ft.KeyboardType.NUMBER)
     duration_slider = ft.Slider(min=16, max=512,divisions=62,label="duration: {value}",value=16, on_change=create_validator(int))
-    out_dir_field = ft.TextField(label="out_dir",value="data_test")
+    out_dir_field = ft.TextField(label="out_dir",value="video_dir")
     controlnet_conditioning_scale_slider = ft.Slider(min=0.0, max=100.0, divisions=100, value=0.0,label="controlnet_conditioning_scale: {value}", on_change=create_validator(float))
     controlnet_conditioning_start_slider = ft.Slider(min=0.0, max=100.0, divisions=100, value=0.0,label="controlnet_conditioning_start: {value}", on_change=create_validator(float))
     controlnet_conditioning_end_slider   = ft.Slider(min=0.0, max=100.0, divisions=100, value=10.0,label="controlnet_conditioning_end: {value}", on_change=create_validator(float))
@@ -315,37 +261,6 @@ def main(page: ft.Page):
 
 
 # Running the application
-ft.app(target=main,port=8550, view=ft.WEB_BROWSER,assets_dir="data_test")
+ft.app(target=main,port=8550, view=ft.WEB_BROWSER,assets_dir="video_dir")
 
 
-
-"""
-run_inference(
-    pipeline=pipeline,
-    prompt="anime,best quality,pov,1girl,solo,gay,milf,shemale,large penis,naked,abs,step mam,penis,erection,4k,depth_of_field,masterpiece,in sauna",
-    n_prompt="worst quality,low quality,painting,sketch,flat color,monochrome,grayscale,ugly face,bad face,bad anatomy,deformed eyes,missing fingers,acnes,skin blemishes",
-    seed=10000000000,
-    steps=25,
-    guidance_scale=7.5,
-    image=None,
-    strength=1.0,
-    canny_image=None,
-    reference_image=None,
-    image_guide=0.0,
-    width  = 512,
-    height = 912,
-    duration =32,
-    idx      = 0,
-    out_dir="data_test",
-    context_frames   =16,
-    context_stride   = 3,
-    context_overlap  = 4,
-    context_schedule = None,
-    controlnet_conditioning_scale = 0.01,
-    controlnet_conditioning_start = 0.1,
-    controlnet_conditioning_end  = 0.2,
-    controlnet_conditioning_bias  = 0.0,
-    controlnet_preprocessing ="none",
-    clip_skip  = 2
-)
-"""
