@@ -16,4 +16,15 @@
 
 ## 使い方
 
-ToBe
+### 環境構築
+
+git clone https://github.com/yasukikudan/animatediff-cli_simple_ui
+cd animatediff-cli
+python3.10 -m venv .venv
+source .venv/bin/activate
+python -m pip install torch torchvision torchaudio flet
+python -m pip install -e '.[dev]'
+python -m pip install -e '.[rife]'
+
+
+
