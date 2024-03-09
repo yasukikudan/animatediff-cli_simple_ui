@@ -1,0 +1,9 @@
+{
+  "base_model": "data/models/huggingface/stable-diffusion-v1-5/",
+  "controlnet_model": "data/models/controlnet/control_v11e_sd15_ip2p",
+  "checkpoint_path": "data/models/sd/ar100.safetensors",
+  "motion_module_path": "data/models/motion-module/mm_sd_v14.safetensors",
+  "scheduler_type": "k_dpmpp_2m",
+  "use_xformers": false
+}
+
