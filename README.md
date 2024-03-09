@@ -23,10 +23,16 @@ git clone https://github.com/yasukikudan/animatediff-cli_simple_ui
 cd animatediff-cli
 python3.10 -m venv .venv
 source .venv/bin/activate
-python -m pip install torch torchvision torchaudio flet cv
+python -m pip install torch torchvision torchaudio flet opencv-python
 python -m pip install -e '.[dev]'
 python -m pip install -e '.[rife]'
+```
 
+### 複数枚の画像からアニメーションを作成する方法
+
+```sh
+#rifeを使って中間フレームを作成 テスト画像は4枚なので4x8で32枚の画像が生成される
+animatediff rife interpolate   -M 8 --in-fps 2 --out-fps 8 src/animatediff/image_dir/
 ```
 
 
