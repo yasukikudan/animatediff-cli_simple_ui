@@ -28,12 +28,32 @@ python -m pip install -e '.[dev]'
 python -m pip install -e '.[rife]'
 ```
 
+
+### モデルデータの配置場所
+config/pipeline/default.json
+下記パスにモデルファイルを配置
+```json
+{
+"base_model": "data/models/huggingface/stable-diffusion-v1-5/",
+"controlnet_model": "data/models/controlnet/control_v11e_sd15_ip2p",
+"checkpoint_path": "data/models/sd/SDHK04.safetensors",
+"motion_module_path": "data/models/motion-module/mm_sd_v14.safetensors"
+}
+```
+
+
 ### 複数枚の画像からアニメーションを作成する方法
 
 ```sh
 #rifeを使って中間フレームを作成 テスト画像は4枚なので4x8で32枚の画像が生成される
 animatediff rife interpolate   -M 8 --in-fps 2 --out-fps 8 src/animatediff/image_dir/
 ```
+
+```sh
+#GUI起動
+python src/animatediff/gui.py
+```
+
 
 
 
