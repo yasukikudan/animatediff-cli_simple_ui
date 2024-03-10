@@ -26,6 +26,7 @@ source .venv/bin/activate
 python -m pip install torch torchvision torchaudio flet opencv-python
 python -m pip install -e '.[dev]'
 python -m pip install -e '.[rife]'
+mkdir video_dir
 ```
 
 
@@ -44,15 +45,20 @@ config/pipeline/default.json
 
 ### 複数枚の画像からアニメーションを作成する方法
 
-```sh
+
 #rifeを使って中間フレームを作成 テスト画像は4枚なので4x8で32枚の画像が生成される
+```sh
 animatediff rife interpolate   -M 8 --in-fps 2 --out-fps 8 src/animatediff/image_dir/
+#中間フレームの出力先はsrc/animatediff/image_dir-rife/
 ```
 
+GUI起動
 ```sh
-#GUI起動
 python src/animatediff/gui.py
 ```
+
+imageの項目に中間フレームの出力先を指定 img2imgの強度を50〜60程度に指定して実行する
+
 
 
 
