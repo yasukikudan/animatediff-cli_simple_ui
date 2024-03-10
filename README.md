@@ -58,7 +58,7 @@ python src/animatediff/gui.py
 ```
 
 imageの項目に中間フレームの出力先を指定 img2imgの強度を50〜60程度に指定して実行する
-
+![サンプル](https://raw.githubusercontent.com/yasukikudan/animatediff-cli_simple_ui/main/screenshot_sample.png)
 
 
 
