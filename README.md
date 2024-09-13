@@ -61,6 +61,11 @@ imageの項目に中間フレームの出力先を指定 img2imgの強度を50�
 ![サンプル](https://raw.githubusercontent.com/yasukikudan/animatediff-cli_simple_ui/main/screenshot_sample.png)
 
 
+animateddiff、controllnetとmediapileによるアニメーション動画への表情反映のデモ
+※音声があります。
+
+https://github.com/user-attachments/assets/d566ccf9-d506-4f26-8e6c-54807204739b
+
 
 
 
